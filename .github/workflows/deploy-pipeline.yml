@@ -1,0 +1,39 @@
+name: Deploy pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'projects/pipeline/**'
+      - 'cloudbuild/pipeline.yaml'
+      - '.github/workflows/deploy-pipeline.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Submit Cloud Build
+        run: |
+          gcloud builds submit \
+            --project="$GCP_PROJECT_ID" \
+            --config=cloudbuild/pipeline.yaml \
+            --substitutions="_REGION=${GCP_REGION}" \
+            .

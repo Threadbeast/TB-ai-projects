@@ -1,0 +1,62 @@
+name: Deploy proxy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'nginx/**'
+      - 'cloudbuild/proxy.yaml'
+      - '.github/workflows/deploy-proxy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve upstream Cloud Run URLs
+        id: upstreams
+        run: |
+          ANALYZER_URL=$(gcloud run services describe tb-analyzer \
+              --project="$GCP_PROJECT_ID" \
+              --region="$GCP_REGION" \
+              --format='value(status.url)')
+          PIPELINE_URL=$(gcloud run services describe tb-pipeline \
+              --project="$GCP_PROJECT_ID" \
+              --region="$GCP_REGION" \
+              --format='value(status.url)')
+          echo "analyzer_host=${ANALYZER_URL#https://}" >> "$GITHUB_OUTPUT"
+          echo "pipeline_host=${PIPELINE_URL#https://}" >> "$GITHUB_OUTPUT"
+
+      - name: Submit Cloud Build
+        run: |
+          gcloud builds submit \
+            --project="$GCP_PROJECT_ID" \
+            --config=cloudbuild/proxy.yaml \
+            --substitutions="_REGION=${GCP_REGION},_ANALYZER_UPSTREAM=${{ steps.upstreams.outputs.analyzer_host }},_PIPELINE_UPSTREAM=${{ steps.upstreams.outputs.pipeline_host }}" \
+            .
+
+      - name: Print public URL
+        run: |
+          PROXY_URL=$(gcloud run services describe tb-proxy \
+              --project="$GCP_PROJECT_ID" \
+              --region="$GCP_REGION" \
+              --format='value(status.url)')
+          echo "### Proxy deployed 🚀" >> "$GITHUB_STEP_SUMMARY"
+          echo "Public URL: $PROXY_URL" >> "$GITHUB_STEP_SUMMARY"
