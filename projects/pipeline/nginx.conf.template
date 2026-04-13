@@ -1,0 +1,18 @@
+server {
+    listen ${PORT};
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index viewer.html;
+
+    # The reverse proxy strips the /pipeline/ prefix before forwarding, so
+    # requests arrive here with paths like /, /data/..., /viewer.html.
+    location /data/ {
+        alias /usr/share/nginx/html/data/;
+        autoindex on;
+    }
+
+    location / {
+        try_files $uri $uri/ /viewer.html;
+    }
+}

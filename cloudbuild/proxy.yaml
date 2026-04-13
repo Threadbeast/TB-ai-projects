@@ -1,0 +1,65 @@
+# Cloud Build config for the `tb-proxy` Cloud Run service (nginx reverse proxy).
+#
+# After the analyzer and pipeline services are deployed, grab their *.run.app
+# URLs and pass them in via substitutions so the proxy knows where to forward:
+#
+#   ANALYZER_URL=$(gcloud run services describe tb-analyzer \
+#                     --region=us-central1 --format='value(status.url)')
+#   PIPELINE_URL=$(gcloud run services describe tb-pipeline \
+#                     --region=us-central1 --format='value(status.url)')
+#
+#   # Strip the https:// prefix — nginx wants just the host.
+#   ANALYZER_HOST="${ANALYZER_URL#https://}"
+#   PIPELINE_HOST="${PIPELINE_URL#https://}"
+#
+#   gcloud builds submit --config=cloudbuild/proxy.yaml \
+#       --substitutions=_REGION=us-central1,_ANALYZER_UPSTREAM=$ANALYZER_HOST,_PIPELINE_UPSTREAM=$PIPELINE_HOST .
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE: tb-proxy
+  _REPO: tb-ai-projects
+  _IMAGE_TAG: latest
+  # Host (no scheme, no trailing slash) of the analyzer Cloud Run service.
+  _ANALYZER_UPSTREAM: ""
+  # Host (no scheme, no trailing slash) of the pipeline Cloud Run service.
+  _PIPELINE_UPSTREAM: ""
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_IMAGE_TAG}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}
+      - nginx
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_IMAGE_TAG}
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --set-env-vars=ANALYZER_UPSTREAM=${_ANALYZER_UPSTREAM},PIPELINE_UPSTREAM=${_PIPELINE_UPSTREAM},ANALYZER_SCHEME=https,PIPELINE_SCHEME=https
+      - --memory=256Mi
+      - --cpu=1
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_IMAGE_TAG}

@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RECSYS — Style Profiles</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=DM+Serif+Display&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#0a0a0a;--surface:#141414;--surface-2:#1c1c1c;--surface-3:#242424;--border:#2a2a2a;--text:#e8e8e8;--text-muted:#888;--text-dim:#555;--accent:#c9a96e;--accent-dim:rgba(201,169,110,0.15);--green:#4ade80;--green-dim:rgba(74,222,128,0.12);--red:#f87171;--red-dim:rgba(248,113,113,0.12);--blue:#60a5fa;--blue-dim:rgba(96,165,250,0.12)}
+  body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased}
+  .container{max-width:1100px;margin:0 auto;padding:0 24px}
+  .topbar{position:sticky;top:0;z-index:100;background:rgba(10,10,10,0.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:16px 24px}
+  .topbar-inner{max-width:1100px;margin:0 auto;display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+  .topbar-title{font-size:13px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--accent)}
+  .profile-select{background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:'Inter',sans-serif;font-size:14px;font-weight:500;padding:8px 16px;cursor:pointer;min-width:220px}
+  .profile-select:focus{outline:none;border-color:var(--accent)}
+  .profile-select option{background:var(--surface)}
+  .tabs{display:flex;gap:4px;background:var(--surface);border-radius:10px;padding:3px;border:1px solid var(--border);margin-left:auto}
+  .tab{padding:8px 18px;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer;color:var(--text-muted);transition:all 0.2s;border:none;background:none;font-family:'Inter',sans-serif}
+  .tab:hover{color:var(--text)}.tab.active{background:var(--accent);color:var(--bg);font-weight:600}
+  .hero{padding:48px 0 40px;border-bottom:1px solid var(--border)}
+  .hero-label{font-size:11px;font-weight:600;letter-spacing:3px;text-transform:uppercase;color:var(--accent);margin-bottom:12px}
+  .hero h1{font-family:'DM Serif Display',serif;font-size:48px;font-weight:400;line-height:1.1;margin-bottom:8px}
+  .hero-sub{font-size:16px;color:var(--text-muted);font-weight:300}
+  .hero-meta{display:flex;gap:28px;margin-top:24px;flex-wrap:wrap}
+  .hero-stat-value{font-size:24px;font-weight:700;color:var(--accent)}
+  .hero-stat-label{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-top:2px}
+  .section{padding:48px 0;border-bottom:1px solid var(--border)}
+  .section-label{font-size:11px;font-weight:600;letter-spacing:3px;text-transform:uppercase;color:var(--accent);margin-bottom:8px}
+  .section h2{font-family:'DM Serif Display',serif;font-size:28px;font-weight:400;margin-bottom:8px}
+  .section-desc{color:var(--text-muted);font-size:14px;margin-bottom:32px;max-width:650px}
+  .sources-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:24px}
+  .source-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;text-align:center}
+  .source-card .num{font-size:26px;font-weight:700;color:var(--accent)}
+  .source-card .label{font-size:11px;color:var(--text-muted);margin-top:4px}
+  .total-badge{display:inline-flex;background:var(--accent-dim);border:1px solid rgba(201,169,110,0.3);border-radius:100px;padding:8px 18px;font-size:13px;font-weight:600;color:var(--accent)}
+  .profile-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  @media(max-width:700px){.profile-grid{grid-template-columns:1fr}}
+  .profile-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px}
+  .profile-card h3{font-size:12px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-muted);margin-bottom:14px}
+  .profile-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)}
+  .profile-row:last-child{border-bottom:none}
+  .profile-row .key{color:var(--text-dim);font-size:13px}
+  .profile-row .val{font-weight:500;font-size:13px;max-width:55%;text-align:right}
+  .brand-list{display:flex;flex-direction:column;gap:8px}
+  .brand-row{display:flex;align-items:center;gap:10px}
+  .brand-name{width:130px;font-size:13px;font-weight:500;text-align:right;flex-shrink:0}
+  .brand-bar-track{flex:1;height:26px;background:var(--surface-2);border-radius:5px;overflow:hidden}
+  .brand-bar{height:100%;border-radius:5px;display:flex;align-items:center;padding-left:8px;font-size:11px;font-weight:600;color:var(--bg)}
+  .brand-count{font-size:11px;color:var(--text-dim);width:65px;text-align:right;flex-shrink:0}
+  .cat-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 28px}
+  @media(max-width:700px){.cat-grid{grid-template-columns:1fr}}
+  .cat-row{display:flex;align-items:center;gap:8px;padding:5px 0}
+  .cat-name{width:110px;font-size:13px;flex-shrink:0}
+  .star{font-size:14px}.star.filled{color:var(--accent)}.star.empty{color:var(--surface-3)}
+  .cat-avg{font-size:12px;color:var(--text-dim);width:30px}.cat-count{font-size:11px;color:var(--text-dim)}
+  .palette{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px}
+  .swatch-group{display:flex;flex-direction:column;align-items:center}
+  .swatch{width:48px;height:48px;border-radius:50%;border:2px solid var(--border)}
+  .swatch-label{font-size:9px;color:var(--text-dim);text-align:center;margin-top:5px;width:52px;line-height:1.2}
+  .swatch-pct{font-size:10px;font-weight:600;color:var(--accent);margin-top:1px}
+  .avoid-grid{display:flex;flex-wrap:wrap;gap:8px}
+  .avoid-tag{background:var(--red-dim);border:1px solid rgba(248,113,113,0.2);color:var(--red);font-size:12px;padding:5px 12px;border-radius:100px;font-weight:500}
+  .trend-row{display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid var(--border)}
+  .trend-row:last-child{border-bottom:none}
+  .trend-date{width:85px;font-size:12px;color:var(--text-dim)}
+  .trend-detail{font-size:12px;color:var(--text-muted);flex:1}
+  .trend-badge{font-size:10px;font-weight:600;padding:3px 10px;border-radius:100px}
+  .trend-badge.love{background:var(--green-dim);color:var(--green)}
+  .trend-badge.mostly{background:var(--blue-dim);color:var(--blue)}
+  .trend-badge.not{background:var(--red-dim);color:var(--red)}
+  .insight{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:16px}
+  .insight h3{font-size:16px;font-weight:600;margin-bottom:8px}
+  .insight p{color:var(--text-muted);font-size:14px;line-height:1.7}
+  .evidence{margin-top:14px;background:var(--surface-2);border-radius:8px;padding:14px 18px;border-left:3px solid var(--accent)}
+  .evidence-label{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--accent);margin-bottom:6px}
+  .evidence-items{list-style:none;display:flex;flex-direction:column;gap:4px}
+  .evidence-items li{font-size:12px;color:var(--text-muted);padding-left:14px;position:relative}
+  .evidence-items li::before{content:'\2192';position:absolute;left:0;color:var(--accent)}
+  .evidence-items li strong{color:var(--text);font-weight:500}
+  .inner-tabs{display:flex;gap:4px;margin-bottom:24px;background:var(--surface);border-radius:10px;padding:3px;border:1px solid var(--border);width:fit-content}
+  .inner-tab{padding:8px 16px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer;color:var(--text-muted);border:none;background:none;font-family:'Inter',sans-serif}
+  .inner-tab:hover{color:var(--text)}.inner-tab.active{background:var(--accent);color:var(--bg);font-weight:600}
+  .inner-panel{display:none}.inner-panel.active{display:block}
+  .outfit{background:var(--surface);border:1px solid var(--border);border-radius:20px;overflow:hidden;margin-bottom:28px}
+  .outfit-header{padding:24px 28px 18px;border-bottom:1px solid var(--border)}
+  .outfit-num{font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--accent);margin-bottom:4px}
+  .outfit-name{font-family:'DM Serif Display',serif;font-size:24px}
+  .outfit-vibe{color:var(--text-muted);font-size:13px;margin-top:4px;font-style:italic}
+  .outfit-products{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:0;border-bottom:1px solid var(--border)}
+  .outfit-product{display:flex;flex-direction:column;align-items:center;padding:18px 10px;border-right:1px solid var(--border);text-align:center}
+  .outfit-product:last-child{border-right:none}
+  .product-type{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--accent);margin-bottom:10px}
+  .product-img{width:110px;height:140px;object-fit:contain;border-radius:8px;background:#1a1a1a;margin-bottom:10px;cursor:pointer;transition:transform 0.15s,border-color 0.15s;border:2px solid transparent}
+  .product-img:hover{transform:scale(1.05);border-color:var(--accent)}
+  .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:200;align-items:center;justify-content:center;cursor:pointer;animation:fadeIn 0.15s ease}
+  .modal-overlay.open{display:flex}
+  .modal-content{cursor:default;text-align:center;max-width:90vw}
+  .modal-content img{max-width:500px;max-height:70vh;object-fit:contain;border-radius:12px;background:#1a1a1a}
+  .modal-label{color:var(--text);font-size:16px;font-weight:500;margin-top:14px}
+  .modal-sub{color:var(--text-muted);font-size:13px;margin-top:4px}
+  .modal-close{position:fixed;top:20px;right:24px;font-size:28px;color:var(--text-muted);cursor:pointer;z-index:201;background:none;border:none;font-family:'Inter',sans-serif}
+  .modal-close:hover{color:var(--text)}
+  @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+  .product-name{font-weight:500;font-size:12px;line-height:1.3;margin-bottom:2px}
+  .product-meta{font-size:11px;color:var(--text-muted);margin-bottom:4px}
+  .product-price{font-weight:700;font-size:14px;color:var(--accent)}
+  .outfit-footer{padding:18px 28px;background:var(--surface-2)}
+  .outfit-total{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+  .outfit-total-label{font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px}
+  .outfit-total-value{font-size:20px;font-weight:700;color:var(--accent)}
+  .outfit-why h4{font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text-dim);margin-bottom:8px}
+  .why-points{list-style:none;display:flex;flex-direction:column;gap:6px}
+  .why-points li{font-size:12px;color:var(--text-muted);line-height:1.6;padding-left:18px;position:relative}
+  .why-points li::before{content:'';position:absolute;left:0;top:7px;width:7px;height:7px;border-radius:50%;background:var(--accent);opacity:0.5}
+  .why-points li strong{color:var(--text);font-weight:500}
+  .anti-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  @media(max-width:700px){.anti-grid{grid-template-columns:1fr}}
+  .anti-card{background:var(--surface);border:1px solid rgba(248,113,113,0.15);border-radius:12px;padding:16px 18px}
+  .anti-card .item{font-weight:500;font-size:13px;margin-bottom:4px;color:var(--red)}
+  .anti-card .reason{font-size:12px;color:var(--text-muted);line-height:1.5}
+  .verify-list{display:flex;flex-direction:column;gap:8px}
+  .verify-item{display:flex;align-items:flex-start;gap:10px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-size:13px;color:var(--text-muted)}
+  .verify-check{color:var(--green);font-size:16px;flex-shrink:0;margin-top:1px}
+  .verify-item strong{color:var(--text)}
+  .gen-meta{margin-top:32px;padding:20px 24px;background:var(--surface);border:1px solid var(--border);border-radius:12px;font-size:12px;color:var(--text-dim);line-height:1.8}
+  .gen-meta strong{color:var(--text-muted)}
+  .tab-panel{display:none}.tab-panel.active{display:block}
+  .loading{text-align:center;padding:100px 0;color:var(--text-dim)}
+  .error{text-align:center;padding:60px 0;color:var(--red)}
+  .error code{display:block;margin-top:10px;font-size:12px;color:var(--text-muted)}
+  footer{padding:40px 0;text-align:center;color:var(--text-dim);font-size:11px}
+  @media(max-width:700px){.topbar-inner{flex-direction:column;align-items:flex-start}.tabs{margin-left:0}.hero h1{font-size:36px}.outfit-products{grid-template-columns:repeat(auto-fit,minmax(110px,1fr))}}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="topbar-inner">
+  <div class="topbar-title">RECSYS Profiles</div>
+  <select class="profile-select" id="profileSelect" onchange="switchProfile(this.value)"><option>Loading...</option></select>
+  <div class="tabs"><button class="tab active" onclick="switchTab('profile',this)">Style Profile</button><button class="tab" onclick="switchTab('outfits',this)">Suggested Outfits</button></div>
+</div></div>
+<div class="container">
+  <div class="hero"><div class="hero-label">Style Profile</div><h1 id="heroName">Loading...</h1><p class="hero-sub" id="heroSub"></p><div class="hero-meta" id="heroMeta"></div></div>
+  <div class="tab-panel active" id="panel-profile">
+    <div class="section" id="sec-sources"></div>
+    <div class="section" id="sec-profile"></div>
+    <div class="section" id="sec-insights"></div>
+    <div class="section" id="sec-preferences"></div>
+    <div class="section" id="sec-satisfaction"></div>
+    <div class="section" id="sec-antirecs"></div>
+    <div class="section" id="sec-verification" style="border-bottom:none;"></div>
+    <div id="sec-meta" style="padding-bottom:60px;"></div>
+  </div>
+  <div class="tab-panel" id="panel-outfits"><div style="padding:48px 0;" id="outfitsContent"><div class="loading">Select a profile.</div></div></div>
+  <footer>RECSYS MVP Pipeline</footer>
+</div>
+<div class="modal-overlay" id="imgModal" onclick="closeModal()">
+  <button class="modal-close" onclick="closeModal()">&times;</button>
+  <div class="modal-content" onclick="event.stopPropagation()">
+    <img id="modalImg" src="" alt="">
+    <div class="modal-label" id="modalLabel"></div>
+    <div class="modal-sub" id="modalSub"></div>
+  </div>
+</div>
+<script>
+/*__PROFILES_DATA__*/
+const CH={'Black':'#1a1a1a','Charcoal':'#444','Navy':'#2c3e5a','Olive':'#556b2f','Brown':'#6b4f3a','Tan':'#c4a26e','Taupe':'#8b7355','Grey':'#808080','Cream':'#f5f5dc','White':'#f0f0f0','Khaki':'#b8a77e','Camel':'#c19a6b','Red':'#c0392b','Green':'#4a8c5c','Blue':'#4a7fb5','Pink':'#d4758c','Yellow':'#d4b84a','Burgundy':'#722f37','Dark Grey':'#333','Light Grey':'#aaa','Natural':'#d4c5a9','Orange':'#d4854a','Chocolate':'#5c3a21','Heather Grey':'#9a9a9a','Sand':'#c9b88c','Indigo':'#3f4980','Slate':'#6a7a8a','Sage':'#8a9a6b','Ivory':'#f0ead6','Teal':'#3a8c8c','Coral':'#cd6b6b'};
+let profilesData=null;
+
+function getMdSection(md,num){
+  if(!md)return '';const re=new RegExp('^## '+num+'\\.\\s+.+$','m');const start=md.search(re);
+  if(start===-1)return '';const rest=md.substring(start);const next=rest.substring(1).search(/^## \d+\./m);
+  return next===-1?rest:rest.substring(0,next+1);
+}
+function extractBlockquotes(section){
+  if(!section)return '';const lines=section.split('\n');const bq=[];
+  for(const l of lines){if(l.startsWith('>'))bq.push(l.replace(/^>\s*/,''));}
+  return bq.join(' ').replace(/\*\*/g,'').trim();
+}
+function extractParagraphs(section){
+  if(!section)return '';
+  return section.split('\n').filter(l=>l.trim()&&!l.startsWith('#')&&!l.startsWith('>')&&!l.startsWith('|')&&!l.startsWith('---')&&!l.startsWith('- '))
+    .map(l=>l.replace(/\*\*/g,'').replace(/\*([^*]+)\*/g,'$1').trim()).filter(Boolean).join(' ');
+}
+
+function init(){
+  if(typeof EMBEDDED_DATA==='undefined'){document.getElementById('sec-sources').innerHTML='<div class="error"><p>No data.</p><code>Run: cd pipeline && python generate_viewer_data.py</code></div>';return;}
+  profilesData=EMBEDDED_DATA;const sel=document.getElementById('profileSelect');sel.innerHTML='';
+  profilesData.profiles.forEach((p,i)=>{const o=document.createElement('option');o.value=i;o.textContent=p.name;sel.appendChild(o);});
+  if(profilesData.profiles.length>0)switchProfile(0);
+}
+function switchProfile(i){
+  const p=profilesData.profiles[i];if(!p)return;
+  renderHero(p);renderSources(p);renderProfileCards(p);renderInsights(p);renderPreferences(p);renderSatisfaction(p);
+  const parsed=parseOutfitMd(p.outfit_recommendations_md||'');
+  renderOutfitCards(parsed.outfits);renderAntiRecs(parsed.antiRecs);renderVerification(parsed.verification);renderMeta(p.style_profile_md||'',p.outfit_recommendations_md||'');
+}
+function renderHero(p){
+  document.getElementById('heroName').textContent=p.name;
+  document.getElementById('heroSub').textContent=[p.customer.day_style,p.customer.location].filter(Boolean).join(' \u00B7 ');
+  const s=p.stats;
+  document.getElementById('heroMeta').innerHTML=[[s.total_orders||'\u2014','Orders'],[s.total_spend?'$'+Math.round(s.total_spend).toLocaleString():'\u2014','Lifetime Spend'],[s.total_ratings||'\u2014','Ratings'],[s.total_dod?s.total_dod.toLocaleString():'\u2014','DOD Swipes'],[s.total_boxes_rated||'\u2014','Boxes Rated']].map(([v,l])=>'<div class="hero-stat"><div class="hero-stat-value">'+v+'</div><div class="hero-stat-label">'+l+'</div></div>').join('');
+}
+function renderSources(p){
+  const s=p.stats,src=[[s.total_ratings,'Product Ratings'],[s.total_dod?s.total_dod.toLocaleString():'0','Style Swipes'],[s.total_boxes_rated,'Box Reviews'],[s.total_cs_notes,'CS Notes'],[s.total_orders,'Orders'],['1','Customer Profile']];
+  const t=s.total_ratings+s.total_dod+s.total_boxes_rated+s.total_cs_notes+s.total_orders+1;
+  document.getElementById('sec-sources').innerHTML='<div class="section-label">How We Know</div><h2>Every signal, in one place</h2><p class="section-desc">Built from multiple data sources. Every insight traces to something this customer rated, said, or did.</p><div class="sources-grid">'+src.map(function(x){return'<div class="source-card"><div class="num">'+x[0]+'</div><div class="label">'+x[1]+'</div></div>';}).join('')+'</div><div class="total-badge">'+t.toLocaleString()+' total data points</div>';
+}
+function pr(k,v){return'<div class="profile-row"><span class="key">'+k+'</span><span class="val">'+(v||'\u2014')+'</span></div>';}
+function renderProfileCards(p){
+  var c=p.customer,q=p.qualitative;
+  var personSection=getMdSection(p.style_profile_md,2);
+  var engagementChain=extractBlockquotes(personSection);
+  var personNarrative=extractParagraphs(personSection);
+  var html='<div class="section-label">The Basics</div><h2>Who '+p.name.split(' ')[0]+' is</h2><p class="section-desc">Sizing, style, and what they\'ve told us.</p><div class="profile-grid"><div class="profile-card"><h3>Sizing</h3>'+pr('Tops',c.top_size)+pr('Waist',c.waist_size)+pr('Inseam',c.inseam_size)+pr('Bottom Fit',c.bottom_fit)+pr('Shoes',c.shoe_size)+pr('Height / Weight',[c.height,c.weight].filter(Boolean).join(' / '))+'</div><div class="profile-card"><h3>Style Identity</h3>'+pr('Day Style',c.day_style)+pr('Evening',c.evening_style)+pr('Design',c.design_style)+pr('Shops At',c.shop_at)+pr('Location',c.location)+pr('Signup Reason',q.signup_reason)+'</div></div>';
+  if(personNarrative)html+='<div class="insight" style="margin-top:24px;"><h3>About this customer</h3><p>'+personNarrative.substring(0,600)+(personNarrative.length>600?'...':'')+'</p></div>';
+  if(engagementChain)html+='<div class="evidence" style="margin-top:12px;"><div class="evidence-label">Engagement Assessment</div><p style="font-size:13px;color:var(--text-muted);line-height:1.7;">'+engagementChain+'</p></div>';
+  document.getElementById('sec-profile').innerHTML=html;
+}
+function renderInsights(p){
+  var cf=(p.color_profile.color_feedback||{}),sf=(p.color_profile.style_feedback||{}),d=p.dod_selectivity,q=p.qualitative,ds=p.dod_affinities.design_styles||[];
+  var h='<div class="section-label">What the Data Tells Us</div><h2>Key insights</h2><p class="section-desc">Each backed by multiple data points.</p>';
+  // Palette — standalone row, not in a card
+  var safeColors=(p.dod_affinities.colors||[]).filter(function(c){return c.like_ratio>=0.4&&c.total>=10;});
+  if(safeColors.length){
+    h+='<h3 style="font-size:16px;font-weight:600;margin-bottom:4px;">Their Palette</h3><div class="palette" style="margin-bottom:28px;">'+safeColors.slice(0,10).map(function(c){return'<div class="swatch-group"><div class="swatch" style="background:'+(CH[c.name]||'#666')+';"></div><div class="swatch-label">'+c.name+'</div><div class="swatch-pct">'+(c.like_ratio*100).toFixed(0)+'%</div></div>';}).join('')+'</div>';
+  }
+  if(q.signup_reason)h+='<div class="insight"><h3>Signed up to: "'+q.signup_reason+'"</h3><p>This framing shapes what they want from the service.</p></div>';
+  // Style evolution reasoning chain
+  var dnaSection=getMdSection(p.style_profile_md,3);
+  var evolutionChain=extractBlockquotes(dnaSection);
+  if(evolutionChain)h+='<div class="insight"><h3>Style evolution</h3><div class="evidence"><div class="evidence-label">Reasoning Chain</div><p style="font-size:13px;color:var(--text-muted);line-height:1.7;">'+evolutionChain+'</p></div></div>';
+  // Color sensitivity + reasoning chain
+  if(cf.too_loud>0){
+    var r=cf.total?(cf.too_loud/cf.total*100).toFixed(0):0,sen=cf.too_loud/(cf.total||1)>0.05;
+    h+='<div class="insight"><h3>'+(sen?'\u26A0\uFE0F ':'')+'Color sensitivity: '+cf.too_loud+' "Too Loud" flags ('+r+'%)</h3><p>'+(cf.just_right||0)+' "Just Right", '+(cf.too_plain||0)+' "Too Plain", '+cf.too_loud+' "Too Loud" out of '+cf.total+'.'+(sen?' Well above the 5% threshold.':'')+'</p>';
+    var cols=p.dod_affinities.colors||[];
+    if(cols.length)h+='<p style="margin-top:14px;font-size:13px;font-weight:500;">Full DOD color breakdown:</p><div class="palette">'+cols.slice(0,12).map(function(c){return'<div class="swatch-group"><div class="swatch" style="background:'+(CH[c.name]||'#666')+';"></div><div class="swatch-label">'+c.name+'</div><div class="swatch-pct">'+(c.like_ratio*100).toFixed(0)+'%</div></div>';}).join('')+'</div>';
+    var tli=p.color_profile.too_loud_items||[];
+    if(tli.length)h+='<div class="evidence" style="border-left-color:var(--red);margin-top:14px;"><div class="evidence-label" style="color:var(--red);">Flagged "Too Loud"</div><ul class="evidence-items">'+tli.map(function(t){return'<li><strong>'+(t.brand||'')+' '+(t.category||'')+'</strong> \u2014 '+t.rating+'\u2605</li>';}).join('')+'</ul></div>';
+    var colorSection=getMdSection(p.style_profile_md,4);
+    var colorChain=extractBlockquotes(colorSection);
+    if(colorChain)h+='<div class="evidence" style="margin-top:14px;"><div class="evidence-label">Color Tolerance Assessment</div><p style="font-size:13px;color:var(--text-muted);line-height:1.7;">'+colorChain+'</p></div>';
+    h+='</div>';
+  }
+  if(sf.total>0)h+='<div class="insight"><h3>Style feedback</h3><p>"Love it": '+(sf.love_it||0)+' ('+((sf.love_it||0)/sf.total*100).toFixed(0)+'%) \u00B7 "Like it": '+(sf.like_it||0)+' \u00B7 "Its not me": '+(sf.its_not_me||0)+' ('+((sf.its_not_me||0)/sf.total*100).toFixed(0)+'%)</p></div>';
+  if(d.total>0)h+='<div class="insight"><h3>DOD selectivity: '+(d.selectivity||'').replace(/_/g,' ')+'</h3><p>'+d.total.toLocaleString()+' swipes \u2014 '+d.likes.toLocaleString()+' likes ('+(d.like_ratio*100).toFixed(0)+'%), '+d.dislikes.toLocaleString()+' dislikes.'+(d.like_ratio<0.4?' Very picky.':'')+'</p></div>';
+  if(ds.length){h+='<div class="insight"><h3>Design style (DOD)</h3><div class="brand-list" style="margin-top:14px;">'+ds.map(function(s){var w=(s.like_ratio*100).toFixed(0);var col=s.like_ratio>0.4?'var(--accent)':s.like_ratio>0.3?'rgba(201,169,110,0.6)':'var(--red)';return'<div class="brand-row"><div class="brand-name">'+s.name+'</div><div class="brand-bar-track"><div class="brand-bar" style="width:'+w+'%;background:'+col+';">'+w+'%</div></div><div class="brand-count">'+s.total+' swipes</div></div>';}).join('')+'</div></div>';}
+  if(q.opt_outs){var tags=q.opt_outs.split(/[,;]+/).map(function(s){return s.trim();}).filter(Boolean);h+='<div class="insight"><h3>Explicit opt-outs</h3><div class="avoid-grid">'+tags.map(function(t){return'<span class="avoid-tag">'+t+'</span>';}).join('')+'</div></div>';}
+  var rev=q.reviews||[],hi=rev.filter(function(r){return r.rating>=5;}),lo=rev.filter(function(r){return r.rating<=2;});
+  if(rev.length){h+='<div class="insight"><h3>In their own words</h3>';if(hi.length)h+='<div class="evidence"><div class="evidence-label">5-Star</div><ul class="evidence-items">'+hi.slice(0,6).map(function(r){return'<li><strong>'+r.brand+' '+r.category+'</strong>: "'+r.text+'"</li>';}).join('')+'</ul></div>';if(lo.length)h+='<div class="evidence" style="border-left-color:var(--red);margin-top:10px;"><div class="evidence-label" style="color:var(--red);">Low-Rated</div><ul class="evidence-items">'+lo.slice(0,4).map(function(r){return'<li><strong>'+r.brand+' '+r.category+' ('+r.rating+'\u2605)</strong>: "'+r.text+'"</li>';}).join('')+'</ul></div>';h+='</div>';}
+  var notes=q.cs_notes_sample||[];
+  if(notes.length)h+='<div class="insight"><h3>CS notes</h3><div class="evidence"><div class="evidence-label">Recent</div><ul class="evidence-items">'+notes.slice(0,6).map(function(n){return'<li>'+n.text.substring(0,120)+(n.text.length>120?'...':'')+'</li>';}).join('')+'</ul></div></div>';
+  document.getElementById('sec-insights').innerHTML=h;
+}
+function renderPreferences(p){
+  var brands=p.brand_affinities||[],cats=p.category_affinities||[],dodB=p.dod_affinities.brands||[];
+  var h='<div class="section-label">Preferences</div><h2>What they love (and what to avoid)</h2><p class="section-desc">From product ratings and DOD swipe data.</p><div class="inner-tabs"><button class="inner-tab active" onclick="switchInner(\'brands\',this)">Top Brands</button><button class="inner-tab" onclick="switchInner(\'categories\',this)">Categories</button><button class="inner-tab" onclick="switchInner(\'dod-brands\',this)">DOD Brands</button></div>';
+  h+='<div id="inner-brands" class="inner-panel active"><div class="brand-list">'+brands.map(function(b){return'<div class="brand-row"><div class="brand-name">'+b.brand+'</div><div class="brand-bar-track"><div class="brand-bar" style="width:'+((b.avg_rating/5)*100).toFixed(0)+'%;background:rgba(201,169,110,'+(b.avg_rating>=4.5?'1':'0.6')+');">'+b.avg_rating+'</div></div><div class="brand-count">'+b.count+' items</div></div>';}).join('')+'</div></div>';
+  h+='<div id="inner-categories" class="inner-panel"><div class="cat-grid">'+cats.map(function(c){var f=Math.floor(c.avg_rating);return'<div class="cat-row"><div class="cat-name">'+c.feedback_category+'</div><div class="cat-stars">'+Array.from({length:5},function(_,i){return'<span class="star '+(i<f?'filled':'empty')+'">\u2605</span>';}).join('')+'</div><div class="cat-avg">'+c.avg_rating+'</div><div class="cat-count">'+c.count+'</div></div>';}).join('')+'</div></div>';
+  h+='<div id="inner-dod-brands" class="inner-panel"><div class="brand-list">'+dodB.map(function(b){var w=(b.like_ratio*100).toFixed(0);return'<div class="brand-row"><div class="brand-name">'+b.name+'</div><div class="brand-bar-track"><div class="brand-bar" style="width:'+w+'%;background:'+(b.like_ratio>0.5?'var(--green)':b.like_ratio>0.3?'var(--accent)':'var(--red)')+';">'+w+'%</div></div><div class="brand-count">'+b.total+' swipes</div></div>';}).join('')+'</div></div>';
+  document.getElementById('sec-preferences').innerHTML=h;
+}
+function renderSatisfaction(p){
+  var sat=p.satisfaction;if(!sat.trajectory||!sat.trajectory.length){document.getElementById('sec-satisfaction').innerHTML='';return;}
+  var h='<div class="section-label">Trajectory</div><h2>Satisfaction over time</h2><p class="section-desc">Overall: '+(sat.avg_all||'\u2014')+' \u00B7 Recent 5: '+(sat.avg_recent_5||'\u2014')+' \u00B7 Trend: '+(sat.trend||'\u2014')+'</p>';
+  sat.trajectory.slice().reverse().forEach(function(t){var r=parseInt(t.rating)||0,stars=Array.from({length:5},function(_,i){return'<span class="star '+(i<r?'filled':'empty')+'">\u2605</span>';}).join('');var sa=t.style_accuracy||'';var bc='';if(sa.toLowerCase().indexOf('love')>=0)bc='love';else if(sa.toLowerCase().indexOf('mostly')>=0)bc='mostly';else if(sa.toLowerCase().indexOf('not')>=0)bc='not';var dt=t.date?new Date(t.date).toLocaleDateString('en-US',{month:'short',year:'numeric'}):'';h+='<div class="trend-row"><span class="trend-date">'+dt+'</span><div class="trend-stars" style="display:flex;gap:2px;">'+stars+'</div><span class="trend-detail">'+(t.value?'Value: '+t.value:'')+'</span>'+(sa?'<span class="trend-badge '+bc+'">'+sa+'</span>':'')+'</div>';});
+  document.getElementById('sec-satisfaction').innerHTML=h;
+}
+function parseOutfitMd(md){
+  var outfits=[],lines=md.split('\n'),antiRecs='',verification='',current=null,section='outfits',inRat=false;
+  for(var i=0;i<lines.length;i++){
+    var line=lines[i];
+    if(/^##\s+ANTI[- ]?RECOMMENDATIONS/i.test(line)){section='anti';antiRecs='';continue;}
+    if(/^##\s+VERIFICATION/i.test(line)){section='verify';verification='';continue;}
+    if(/^\*Generated by RECSYS/i.test(line))continue;
+    if(section==='anti'){antiRecs+=line+'\n';continue;}
+    if(section==='verify'){verification+=line+'\n';continue;}
+    var om=line.match(/^###\s+Outfit\s+(\d+):\s*"([^"]+)"/);
+    if(om){current={num:om[1],name:om[2],vibe:'',items:[],total:'',rationalization:[]};outfits.push(current);inRat=false;continue;}
+    if(!current)continue;
+    if(line.charAt(0)==='*'&&!current.vibe&&current.items.length===0){current.vibe=line.replace(/^\*+|\*+$/g,'').trim();continue;}
+    var tr=line.match(/^\|\s*(\w[\w\s/&]*?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*\$?([\d,.]+)\s*\|\s*\[View\]\((.+?)\)\s*\|/);
+    if(tr&&tr[1]!=='Piece'){current.items.push({type:tr[1].trim(),name:tr[2].trim(),color:tr[3].trim(),price:tr[4].trim(),image:tr[5].trim()});continue;}
+    var tm=line.match(/\*\*Total MSRP:\s*\$?([\d,.]+)\*\*/);
+    if(tm){current.total=tm[1];continue;}
+    if(/^\*\*Rationalization/i.test(line)){inRat=true;continue;}
+    if(inRat){var rm=line.match(/^\d+\.\s+\*\*(.+?)\*\*\s*[\u2014\u2013\u2012—–-]+\s*(.*)/);if(rm)current.rationalization.push({label:rm[1],text:rm[2]});}
+    if(/^---\s*$/.test(line))inRat=false;
+  }
+  return{outfits:outfits,antiRecs:antiRecs.trim(),verification:verification.trim()};
+}
+function renderOutfitCards(outfits){
+  if(!outfits.length){document.getElementById('outfitsContent').innerHTML='<p style="color:var(--text-dim);text-align:center;padding:60px;">No outfits available.</p>';return;}
+  document.getElementById('outfitsContent').innerHTML=outfits.map(function(o){return'<div class="outfit"><div class="outfit-header"><div class="outfit-num">Outfit '+o.num+'</div><div class="outfit-name">'+o.name+'</div>'+(o.vibe?'<div class="outfit-vibe">'+o.vibe+'</div>':'')+'</div><div class="outfit-products">'+o.items.map(function(it){return'<div class="outfit-product"><div class="product-type">'+it.type+'</div><img class="product-img" src="'+it.image+'" alt="'+it.name+'" loading="lazy" onerror="this.style.display=\'none\'" onclick="openModal(\''+it.image.replace(/'/g,"\\'")+'\',\''+it.name.replace(/'/g,"\\'")+'\',\''+it.color.replace(/'/g,"\\'")+'\')">'+'<div class="product-name">'+it.name+'</div><div class="product-meta">'+it.color+'</div><div class="product-price">$'+it.price+'</div></div>';}).join('')+'</div><div class="outfit-footer"><div class="outfit-total"><span class="outfit-total-label">Total MSRP</span><span class="outfit-total-value">$'+o.total+'</span></div>'+(o.rationalization.length?'<div class="outfit-why"><h4>Why This Works</h4><ul class="why-points">'+o.rationalization.map(function(r){return'<li><strong>'+r.label+'</strong> \u2014 '+r.text+'</li>';}).join('')+'</ul></div>':'')+'</div></div>';}).join('');
+}
+function renderAntiRecs(md){
+  if(!md){document.getElementById('sec-antirecs').innerHTML='';return;}
+  var rows=[];md.split('\n').forEach(function(line){var m=line.match(/^\|\s*(.+?)\s*\|\s*(.+?)\s*\|/);if(m&&m[1]!=='Item'&&m[1].indexOf('---')<0)rows.push({item:m[1].replace(/\*\*/g,''),reason:m[2]});});
+  var h='<div class="section-label">Guardrails</div><h2>Anti-Recommendations</h2><p class="section-desc">Items in stock that should NOT be sent.</p>';
+  h+=rows.length?'<div class="anti-grid">'+rows.map(function(r){return'<div class="anti-card"><div class="item">'+r.item+'</div><div class="reason">'+r.reason+'</div></div>';}).join('')+'</div>':'<div style="color:var(--text-dim);">None parsed.</div>';
+  document.getElementById('sec-antirecs').innerHTML=h;
+}
+function renderVerification(md){
+  if(!md){document.getElementById('sec-verification').innerHTML='';return;}
+  var items=[];md.split('\n').forEach(function(line){var m=line.match(/^\d+\.\s*[^\w]*\*\*(.+?)\*\*:?\s*(.*)/);if(m)items.push({label:m[1],detail:m[2]});});
+  document.getElementById('sec-verification').innerHTML='<div class="section-label">Quality Gate</div><h2>Verification Checklist</h2><p class="section-desc">Automated checks on the outfit set.</p><div class="verify-list">'+items.map(function(v){return'<div class="verify-item"><span class="verify-check">\u2713</span><div><strong>'+v.label+'</strong> '+v.detail+'</div></div>';}).join('')+'</div>';
+}
+function renderMeta(pMd,oMd){
+  var ex=function(s){var m=s.match(/Generated by RECSYS MVP Pipeline[^*\n]*/);return m?m[0].trim():null;};
+  var l3=ex(pMd),l4=ex(oMd);
+  if(!l3&&!l4){document.getElementById('sec-meta').innerHTML='';return;}
+  document.getElementById('sec-meta').innerHTML='<div class="gen-meta">'+(l3?'<div><strong>Layer 3:</strong> '+l3+'</div>':'')+(l4?'<div><strong>Layer 4:</strong> '+l4+'</div>':'')+'</div>';
+}
+function openModal(src,name,color){
+  document.getElementById('modalImg').src=src;
+  document.getElementById('modalLabel').textContent=name;
+  document.getElementById('modalSub').textContent=color;
+  document.getElementById('imgModal').classList.add('open');
+}
+function closeModal(){document.getElementById('imgModal').classList.remove('open');}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+function switchTab(tab,btn){document.querySelectorAll('.topbar .tab').forEach(function(t){t.classList.remove('active');});document.querySelectorAll('.tab-panel').forEach(function(p){p.classList.remove('active');});btn.classList.add('active');document.getElementById('panel-'+tab).classList.add('active');}
+function switchInner(panel,btn){var par=btn.parentElement.parentElement;par.querySelectorAll('.inner-tab').forEach(function(t){t.classList.remove('active');});par.querySelectorAll('.inner-panel').forEach(function(p){p.classList.remove('active');});btn.classList.add('active');document.getElementById('inner-'+panel).classList.add('active');}
+init();
+</script>
+</body>
+</html>

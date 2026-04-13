@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hate It Rate Analyzer — ThreadBeast Command Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Russo+One&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- STAR FIELD BACKGROUND -->
+  <div class="starfield" id="starfield"></div>
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header__left">
+      <div class="header__logo">
+        <span class="logo-icon">⚔️</span>
+        <span class="logo-text">HATE IT RATE</span>
+        <span class="logo-sub">COMMAND CENTER</span>
+      </div>
+    </div>
+    <div class="header__center">
+      <nav class="layer-nav">
+        <button class="layer-btn active" data-layer="box-health">
+          <span class="layer-icon">📦</span> Box Health
+        </button>
+        <button class="layer-btn" data-layer="item-health">
+          <span class="layer-icon">🛡️</span> Item Health
+        </button>
+        <button class="layer-btn" data-layer="report">
+          <span class="layer-icon">📋</span> Intel Report
+        </button>
+        <button class="layer-btn" data-layer="chat">
+          <span class="layer-icon">🤖</span> Ask the Droid
+        </button>
+      </nav>
+    </div>
+    <div class="header__right">
+      <div class="cache-info" id="cacheInfo"></div>
+      <button class="btn-refresh" id="forceRefresh" title="Clear cache and re-fetch from BigQuery">
+        ↺ Force Refresh
+      </button>
+      <div class="data-status" id="dataStatus">Loading holocron...</div>
+    </div>
+  </header>
+
+  <!-- LAYER 1: BOX HEALTH -->
+  <div class="layer" id="layer-box-health">
+    <div class="sub-nav">
+      <button class="sub-btn active" data-sub="box-overview">Overview</button>
+      <button class="sub-btn" data-sub="box-lag">Lag Analysis</button>
+    </div>
+    <div class="sub-panel" id="sub-box-overview">
+
+      <!-- Box Health Controls -->
+      <div class="controls">
+        <div class="control-group">
+          <label>Time Range</label>
+          <div class="toggle-group">
+            <button class="toggle-btn bh-range-btn" data-days="14">2 Wks</button>
+            <button class="toggle-btn bh-range-btn" data-days="30">1 Mo</button>
+            <button class="toggle-btn bh-range-btn active" data-days="91">3 Mo</button>
+            <button class="toggle-btn bh-range-btn" data-days="182">6 Mo</button>
+            <button class="toggle-btn bh-range-btn" data-days="365">1 Yr</button>
+            <button class="toggle-btn bh-range-btn" data-days="0">All Time</button>
+            <button class="toggle-btn bh-range-btn" data-days="custom">Custom</button>
+          </div>
+          <div id="bhCustomRange" class="hidden" style="display:none;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+            <input type="date" id="bhCustomStart" style="background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);padding:5px 8px;border-radius:6px;font-size:12px;font-family:inherit;outline:none;">
+            <span style="color:var(--text-muted);">→</span>
+            <input type="date" id="bhCustomEnd" style="background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);padding:5px 8px;border-radius:6px;font-size:12px;font-family:inherit;outline:none;">
+          </div>
+        </div>
+        <div class="control-group" style="margin-left:auto;">
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.8;">
+            <strong style="color:var(--text-secondary);">Threat Levels:</strong>&nbsp;
+            <span style="color:#22c55e">●</span> <strong>Clear</strong> &lt;10%&nbsp;&nbsp;
+            <span style="color:#f59e0b">●</span> <strong>Elevated</strong> 10–15%&nbsp;&nbsp;
+            <span style="color:#ef4444">●</span> <strong>High</strong> 15–20%&nbsp;&nbsp;
+            <span style="color:#ff2d2d">●</span> <strong>Critical</strong> 20%+
+          </div>
+        </div>
+      </div>
+
+      <!-- Summary Cards -->
+      <div class="summary-cards">
+        <div class="card card--dark-side">
+          <div class="card__label">Box Hate Rate</div>
+          <div class="card__dual-values">
+            <div class="card__dual-item">
+              <span class="card__dual-label">New</span>
+              <span class="card__value card__value--sm" id="bh-hate-new">--</span>
+              <div class="delta-row" id="bh-hate-new-delta"></div>
+            </div>
+            <div class="card__dual-sep">|</div>
+            <div class="card__dual-item">
+              <span class="card__dual-label">Recurring</span>
+              <span class="card__value card__value--sm" id="bh-hate-rec">--</span>
+              <div class="delta-row" id="bh-hate-rec-delta"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card card--love">
+          <div class="card__label">Box Love Rate</div>
+          <div class="card__dual-values">
+            <div class="card__dual-item">
+              <span class="card__dual-label">New</span>
+              <span class="card__value card__value--sm" id="bh-love-new">--</span>
+              <div class="delta-row" id="bh-love-new-delta"></div>
+            </div>
+            <div class="card__dual-sep">|</div>
+            <div class="card__dual-item">
+              <span class="card__dual-label">Recurring</span>
+              <span class="card__value card__value--sm" id="bh-love-rec">--</span>
+              <div class="delta-row" id="bh-love-rec-delta"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card card--volume">
+          <div class="card__label">Boxes Rated</div>
+          <div class="card__value" id="bh-total">--</div>
+          <div class="card__sub" id="bh-total-sub">-- new | -- recurring</div>
+        </div>
+        <div class="card card--threat">
+          <div class="card__label">Box Threat Level</div>
+          <div class="card__value" id="bh-threat">--</div>
+          <div class="card__sub" id="bh-threat-desc">Assessing...</div>
+          <div class="card__sub" id="bh-threat-rate" style="font-size:11px;margin-top:4px;color:var(--text-muted);">Combined hate rate: --</div>
+        </div>
+      </div>
+
+      <!-- Chart 1: Trend -->
+      <div class="charts-row">
+        <div class="chart-container">
+          <h3 class="section-title">📈 Box Hate &amp; Love Rate — Weekly Trend</h3>
+          <canvas id="bhTrendChart" height="250"></canvas>
+        </div>
+      </div>
+
+      <!-- Chart 2: Style Accuracy -->
+      <div class="charts-row">
+        <div class="chart-container">
+          <div class="chart-header-row">
+            <h3 class="section-title">🎯 Style Accuracy Breakdown</h3>
+            <div class="toggle-group">
+              <button class="toggle-btn active" data-bh-toggle="style" data-val="hate">Hate Boxes</button>
+              <button class="toggle-btn" data-bh-toggle="style" data-val="love">Love Boxes</button>
+            </div>
+          </div>
+          <canvas id="bhStyleChart" height="280"></canvas>
+        </div>
+      </div>
+
+      <!-- Chart 3: Value Perception -->
+      <div class="charts-row">
+        <div class="chart-container">
+          <div class="chart-header-row">
+            <h3 class="section-title">💰 Value Perception</h3>
+            <div class="toggle-group">
+              <button class="toggle-btn active" data-bh-toggle="value" data-val="hate">Hate Boxes</button>
+              <button class="toggle-btn" data-bh-toggle="value" data-val="love">Love Boxes</button>
+            </div>
+          </div>
+          <canvas id="bhValueChart" height="280"></canvas>
+        </div>
+      </div>
+
+      <!-- Chart 4: Fit Signal -->
+      <div class="charts-row">
+        <div class="chart-container">
+          <h3 class="section-title">👖 Fit Signal — Bad Fit Rate by Week</h3>
+          <canvas id="bhFitChart" height="250"></canvas>
+        </div>
+      </div>
+
+      <!-- Chart 5: Rating Distribution -->
+      <div class="charts-row">
+        <div class="chart-container">
+          <div class="chart-header-row">
+            <h3 class="section-title">📊 Box Rating Distribution Over Time</h3>
+          </div>
+          <canvas id="bhDistChart" height="250"></canvas>
+        </div>
+      </div>
+
+      <!-- Box Health Drivers -->
+      <div class="drivers-section" id="bh-drivers-section">
+        <div class="chart-header-row" style="margin-bottom:12px;">
+          <h3 class="section-title">⚡ Box Hate Rate by Dimension</h3>
+          <div class="control-group" style="margin:0;">
+            <select id="bhDimensionSelect">
+              <option value="Stylist">Stylist</option>
+              <option value="ShipAddrState">State</option>
+              <option value="package_num">Box Number</option>
+              <option value="DayStyle">Day Style</option>
+              <option value="EveningStyle">Evening Style</option>
+              <option value="BottomFit">Bottom Fit</option>
+              <option value="TopSize">Top Size</option>
+            </select>
+          </div>
+        </div>
+        <table class="driver-table" id="bhDriverTable">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Value</th>
+              <th title="% of boxes rated 1 or 2 stars">Box Hate Rate</th>
+              <th title="% of boxes rated 4 or 5 stars">Box Love Rate</th>
+              <th>Boxes Rated</th>
+              <th title="How much higher/lower this group's hate rate is vs overall average">Lift vs Avg</th>
+            </tr>
+          </thead>
+          <tbody id="bhDriverTableBody"></tbody>
+        </table>
+        <div class="explainer" id="bh-drivers-explainer" style="margin-top:12px;">
+          <strong>What this shows:</strong> Which segments have the highest box hate rates, ranked by lift vs the overall average.
+          Use this to identify which stylists, states, or customer profiles are consistently producing low-rated boxes.
+        </div>
+      </div>
+
+      <!-- Customer Segment Performance -->
+      <div class="drivers-section" id="bh-profiles-section" style="margin-top:32px;">
+
+        <h3 class="section-title">🧬 Customer Segment Performance</h3>
+
+        <!-- Part 1: Box Tenure Loyalty Curve -->
+        <div style="margin-bottom:28px;">
+          <div style="font-size:13px;font-weight:600;color:var(--text-secondary);margin-bottom:12px;">
+            📦 Box Tenure Loyalty Curve
+          </div>
+          <div class="charts-row" style="margin:0;">
+            <div class="chart-container" style="padding:16px 20px;">
+              <canvas id="bhTenureChart" height="200"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Part 2: Segment Gap Table -->
+        <div>
+          <div style="font-size:13px;font-weight:600;color:var(--text-secondary);margin-bottom:12px;">
+            📊 Segment Gap by Dimension
+            <span style="font-weight:400;font-size:11px;color:var(--text-muted);margin-left:8px;">Sorted by spread — biggest gap = most actionable</span>
+          </div>
+          <table class="driver-table" id="bhSegmentGapTable">
+            <thead>
+              <tr>
+                <th>Dimension</th>
+                <th>Best Segment</th>
+                <th style="color:var(--light-side)">Hate Rate</th>
+                <th>Worst Segment</th>
+                <th style="color:var(--dark-side)">Hate Rate</th>
+                <th title="Difference between worst and best — bigger = more actionable">Gap ▼</th>
+              </tr>
+            </thead>
+            <tbody id="bhSegmentGapBody">
+              <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">
+                <span class="loading-spinner"></span> Computing segment profiles...
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="explainer" style="margin-top:12px;">
+          <strong>What this shows:</strong> For each customer profile dimension, the best and worst performing segments and the gap between them.
+          A large gap means there's real variation worth acting on — those dimensions are the strongest levers for improving box performance.
+          Small gaps mean the dimension doesn't predict outcomes much.
+        </div>
+
+      </div><!-- /bh-profiles-section -->
+
+    </div><!-- /sub-box-overview -->
+    <div class="sub-panel hidden" id="sub-box-lag">
+
+      <!-- Controls Bar -->
+      <div class="controls" style="align-items:flex-start;">
+        <div class="control-group">
+          <label>Ship Weeks <span style="color:var(--text-muted);font-weight:400;font-size:11px;">(select up to 4)</span></label>
+          <select id="lagWeekSelect" multiple size="5"
+            style="background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);
+                   padding:6px 8px;border-radius:6px;font-size:12px;min-width:185px;outline:none;
+                   font-family:inherit;cursor:pointer;">
+            <option disabled>Loading ship weeks…</option>
+          </select>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">Ctrl+click to compare multiple weeks</div>
+        </div>
+        <div class="control-group">
+          <label>Lag Window</label>
+          <div class="toggle-group">
+            <button class="toggle-btn lag-window-btn" data-days="7">7d</button>
+            <button class="toggle-btn lag-window-btn active" data-days="14">14d</button>
+            <button class="toggle-btn lag-window-btn" data-days="21">21d</button>
+            <button class="toggle-btn lag-window-btn" data-days="30">30d</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <label>Customer Type</label>
+          <div class="toggle-group">
+            <button class="toggle-btn lag-ctype-btn active" data-ctype="all">All</button>
+            <button class="toggle-btn lag-ctype-btn" data-ctype="new">New</button>
+            <button class="toggle-btn lag-ctype-btn" data-ctype="recurring">Recurring</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 1: Lag Curve -->
+      <div class="charts-row">
+        <div class="chart-container">
+          <h3 class="section-title">⏱️ Feedback Lag Curve — Box Hate Rate by Day Since Ship</h3>
+          <canvas id="lagCurveChart" height="260"></canvas>
+        </div>
+      </div>
+
+      <!-- Section 2: Ship Week × Rating Week Heatmap -->
+      <div class="charts-row">
+        <div class="chart-container">
+          <h3 class="section-title">🌡️ Ship Week × Rating Week Heatmap</h3>
+          <div id="lagHeatmap" style="overflow-x:auto;padding-top:8px;"></div>
+        </div>
+      </div>
+
+      <!-- Section 3: Ship Week Breakdown Table -->
+      <div class="drivers-section" style="margin-top:24px;">
+        <h3 class="section-title">📋 Ship Week Breakdown</h3>
+        <table class="driver-table" id="lagTable">
+          <thead>
+            <tr>
+              <th>Ship Week</th>
+              <th>Total Boxes</th>
+              <th title="% of boxes rated 1 or 2 stars">Hate Rate</th>
+              <th title="% of boxes rated 4 or 5 stars">Love Rate</th>
+              <th title="Average days from ship date to rating date">Avg Days to Rate</th>
+              <th title="Hate rate for first-box (new) customers">New Hate Rate</th>
+              <th title="Hate rate for returning customers">Recurring Hate Rate</th>
+            </tr>
+          </thead>
+          <tbody id="lagTableBody">
+            <tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px;">Select a ship week above to see breakdown</td></tr>
+          </tbody>
+        </table>
+        <div class="explainer" style="margin-top:12px;">
+          <strong>What this shows:</strong> Summary stats for each selected ship week.
+          <strong>Avg Days to Rate</strong> tells you how long customers typically waited before leaving feedback — useful for knowing when a ship week's signal is complete.
+          Compare <strong>New vs Recurring</strong> hate rates to spot if first-box curation is a bigger driver than product quality.
+        </div>
+      </div>
+
+    </div><!-- /sub-box-lag -->
+  </div>
+
+  <!-- LAYER 2: ITEM HEALTH -->
+  <div class="layer hidden" id="layer-item-health">
+    <div class="sub-nav">
+      <button class="sub-btn active" data-sub="item-overview">Overview</button>
+      <button class="sub-btn" data-sub="item-lag">Lag Analysis</button>
+    </div>
+    <div class="sub-panel" id="sub-item-overview">
+      <!-- Controls Bar -->
+    <div class="controls">
+      <div class="control-group">
+        <label>Time Range</label>
+        <select id="dateRange">
+          <option value="7">Last 7 days</option>
+          <option value="14" selected>Last 14 days</option>
+          <option value="30">Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="180">Last 6 months</option>
+          <option value="custom">Custom Range</option>
+        </select>
+        <input type="date" id="customStart" class="hidden">
+        <input type="date" id="customEnd" class="hidden">
+      </div>
+      <!-- Box Rating moved to Box Health tab -->
+      <div class="control-group">
+        <label>Time View</label>
+        <div class="toggle-group">
+          <button class="toggle-btn active" data-view="received">Ratings Received</button>
+          <button class="toggle-btn" data-view="shipped">Shipped Cohort</button>
+        </div>
+      </div>
+      <div class="control-group">
+        <label>Dimension</label>
+        <select id="dimensionSelect">
+          <option value="" selected>Overall</option>
+          <option value="product_brand">Brand</option>
+          <option value="product_category">Category</option>
+          <option value="product_subcategory">Subcategory</option>
+          <option value="product_item_style">Item Style</option>
+          <option value="Stylist">Stylist</option>
+          <option value="plan">Plan</option>
+          <option value="BoxNumber">Box Number</option>
+          <option value="product_color_style">Color Style</option>
+          <option value="product_seasonality">Seasonality</option>
+          <option value="product_sourcing">Sourcing</option>
+          <option value="ShipAddrState">State</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Top Line Summary -->
+    <div class="summary-cards">
+      <div class="card card--dark-side">
+        <div class="card__label">Dark Side Power</div>
+        <div class="card__value" id="hateRate">--</div>
+        <div class="card__sub" id="hateRateChange">Hate It Rate</div>
+        <div class="delta-row" id="hateRateDeltas"></div>
+      </div>
+      <div class="card card--volume">
+        <div class="card__label">Items Rated</div>
+        <div class="card__value" id="totalRated">--</div>
+        <div class="card__sub" id="hateCount">-- hate ratings</div>
+      </div>
+      <div class="card card--love">
+        <div class="card__label">Light Side</div>
+        <div class="card__value" id="loveRate">--</div>
+        <div class="card__sub">Love It Rate</div>
+        <div class="delta-row" id="loveRateDeltas"></div>
+      </div>
+      <div class="card card--threat">
+        <div class="card__label">Threat Level</div>
+        <div class="card__value" id="threatLevel">--</div>
+        <div class="card__sub" id="threatDesc">Assessing...</div>
+      </div>
+    </div>
+
+    <!-- Charts Row -->
+    <div class="charts-row">
+      <div class="chart-container">
+        <h3 class="section-title">📈 Dark Side Activity — Weekly Trend</h3>
+        <canvas id="trendChart" height="250"></canvas>
+      </div>
+      <div class="chart-container chart-container--narrow">
+        <h3 class="section-title">🎯 Rating Distribution</h3>
+        <canvas id="distChart" height="250"></canvas>
+      </div>
+    </div>
+
+    <!-- Drill Path -->
+    <div class="drill-path" id="drillPath"></div>
+
+    <!-- Driver Table -->
+    <div class="drivers-section" id="itemDriverSection">
+      <h3 class="section-title">⚡ Top Dark Side Agents — Ranked by Threat (Z-Score)</h3>
+      <table class="driver-table" id="driverTable">
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Value</th>
+            <th title="% of ratings in this group that were 1 or 2 stars (Hate It)">Hate It Rate</th>
+            <th title="How many items were rated in this group">Volume</th>
+            <th title="How much higher or lower this group's hate-it rate is vs the overall average. +50% means 50% worse than average.">Lift vs Baseline ⓘ</th>
+            <th title="Confidence score. Above +2 or below -2 means the pattern is real, not a fluke. Accounts for volume — a small group needs a bigger difference to score high.">Z-Score ⓘ</th>
+            <th title="'Significant' means we're 95%+ confident this pattern is real. 'Not significant' means we need more data — but it doesn't mean the group is fine.">Significance ⓘ</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="driverTableBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Brand × Category Heatmap -->
+    <div class="drivers-section" id="brandCatSection" style="margin-top:28px;">
+      <h3 class="section-title">🗺️ Brand × Category Hate Rate Heatmap</h3>
+      <div id="brandCatHeatmap" style="overflow-x:auto;padding-top:8px;">
+        <div style="color:var(--text-muted);text-align:center;padding:24px;">Loading heatmap…</div>
+      </div>
+      <div class="explainer" style="margin-top:12px;">
+        <strong>What this shows:</strong> Hate rate for every brand × category combination — white = low hate, dark red = high hate.
+        Click any cell to drill into that brand + category instantly.
+        Only cells with 3+ rated items are shown.
+      </div>
+    </div>
+
+    <!-- Early Warning -->
+    <div class="early-warning" id="earlyWarningSection" style="display:none;">
+      <h3 class="section-title">🚨 Early Warning — Shipped Cohort Tracker</h3>
+      <table class="driver-table" id="earlyWarningTable">
+        <thead>
+          <tr>
+            <th>Week Shipped</th>
+            <th>Items Shipped</th>
+            <th>Rated So Far</th>
+            <th>Completion %</th>
+            <th>Hate It Rate</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="earlyWarningBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Enrichment Panel (shown on drill-down) -->
+    <div class="enrichment-panel" id="enrichmentPanel" style="display:none;">
+      <h3 class="section-title">🔬 Intelligence Report — <span id="enrichmentTarget"></span></h3>
+
+      <!-- Sentiment Breakdown (new: all-rated style accuracy bar) -->
+      <div class="enrichment-card enrichment-card--wide" id="sentimentBreakdownCard" style="margin-bottom:16px;">
+        <h4>Style Sentiment — How Did It Land?</h4>
+        <div id="sentimentBar" style="display:flex;height:28px;border-radius:6px;overflow:hidden;margin:8px 0 4px;gap:2px;"></div>
+        <div id="sentimentLegend" style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;margin-top:6px;"></div>
+        <div id="sentimentLabel" style="margin-top:10px;font-size:12px;color:var(--text-secondary);line-height:1.5;"></div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:8px;">Based on all rated items for this selection, not just hated ones.</div>
+      </div>
+
+      <div class="enrichment-grid">
+        <div class="enrichment-card">
+          <h4>Style Accuracy (Hate Items)</h4>
+          <div id="enrichStyleAccuracy"></div>
+        </div>
+        <div class="enrichment-card">
+          <h4>Quality</h4>
+          <div id="enrichQuality"></div>
+        </div>
+        <div class="enrichment-card">
+          <h4>Fit</h4>
+          <div id="enrichFit"></div>
+        </div>
+        <div class="enrichment-card enrichment-card--wide">
+          <h4>Customer Transmissions (Comments)</h4>
+          <div id="enrichComments"></div>
+        </div>
+      </div>
+    </div>
+    </div><!-- /sub-item-overview -->
+    <div class="sub-panel hidden" id="sub-item-lag">
+
+      <!-- Controls Bar -->
+      <div class="controls" style="align-items:flex-start;">
+        <div class="control-group">
+          <label>Ship Weeks <span style="color:var(--text-muted);font-weight:400;font-size:11px;">(select up to 4)</span></label>
+          <select id="ilWeekSelect" multiple size="5"
+            style="background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);
+                   padding:6px 8px;border-radius:6px;font-size:12px;min-width:185px;outline:none;
+                   font-family:inherit;cursor:pointer;">
+            <option disabled>Loading ship weeks…</option>
+          </select>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">Ctrl+click to compare multiple weeks</div>
+        </div>
+        <div class="control-group">
+          <label>Lag Window</label>
+          <div class="toggle-group">
+            <button class="toggle-btn il-window-btn" data-days="7">7d</button>
+            <button class="toggle-btn il-window-btn active" data-days="14">14d</button>
+            <button class="toggle-btn il-window-btn" data-days="21">21d</button>
+            <button class="toggle-btn il-window-btn" data-days="30">30d</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <label>Customer Type</label>
+          <div class="toggle-group">
+            <button class="toggle-btn il-ctype-btn active" data-ctype="all">All</button>
+            <button class="toggle-btn il-ctype-btn" data-ctype="new">New</button>
+            <button class="toggle-btn il-ctype-btn" data-ctype="recurring">Recurring</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <label>Breakdown By</label>
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;
+                      background:var(--bg-card);border:1px solid var(--border);border-radius:6px;
+                      font-size:12px;color:var(--text-primary);min-height:32px;">
+            <span style="color:var(--accent-blue);font-size:14px;">📊</span>
+            <span id="ilDimLabel" style="font-weight:500;">Brand</span>
+          </div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">Set in Item Health dimension selector</div>
+        </div>
+      </div>
+
+      <!-- Section 1: Lag Curve -->
+      <div class="charts-row">
+        <div class="chart-container">
+          <h3 class="section-title">⏱️ Feedback Lag Curve — Item Hate Rate by Day Since Ship</h3>
+          <canvas id="ilCurveChart" height="260"></canvas>
+        </div>
+      </div>
+
+      <!-- Section 2: Ship Week × Rating Week Heatmap -->
+      <div class="charts-row">
+        <div class="chart-container">
+          <h3 class="section-title">🌡️ Ship Week × Rating Week Heatmap</h3>
+          <div id="ilHeatmap" style="overflow-x:auto;padding-top:8px;"></div>
+        </div>
+      </div>
+
+      <!-- Section 3: Ship Week Breakdown Table -->
+      <div class="drivers-section" style="margin-top:24px;">
+        <h3 class="section-title">📋 Ship Week Breakdown</h3>
+        <table class="driver-table" id="ilTable">
+          <thead>
+            <tr>
+              <th>Ship Week</th>
+              <th>Total Items</th>
+              <th title="% of items rated 1 or 2 stars">Hate Rate</th>
+              <th title="% of items rated 4 or 5 stars">Love Rate</th>
+              <th title="Average days from ship date to rating date">Avg Days to Rate</th>
+              <th title="Hate rate for first-box (new) customers">New Hate Rate</th>
+              <th title="Hate rate for returning customers">Recurring Hate Rate</th>
+            </tr>
+          </thead>
+          <tbody id="ilTableBody">
+            <tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px;">Select a ship week above to see breakdown</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Section 4: Dimension Breakdown (conditional) -->
+      <div class="drivers-section" id="ilDimSection" style="margin-top:24px;display:none;">
+        <h3 class="section-title" id="ilDimTitle">📊 Breakdown by Dimension</h3>
+        <div id="ilDimTables"></div>
+      </div>
+
+      <div class="explainer" style="margin-top:16px;">
+        <strong>What this shows:</strong> How long it takes for hate ratings to arrive after items ship, and which dimension values are driving hate in each ship week.
+        The <strong>Lag Curve</strong> shows how hate rate builds day by day after shipping — a steep early rise means customers rate fast and feedback is already reliable.
+        The <strong>Heatmap</strong> shows which ship weeks got rated in which rating weeks, helping spot delayed feedback patterns.
+        The <strong>Dimension Breakdown</strong> ranks brands, categories, or other dimensions by hate rate for each selected ship week, with Lift and Z-Score showing how much worse (or better) each value is vs the overall average.
+      </div>
+
+    </div><!-- /sub-item-lag -->
+  </div><!-- /layer-item-health -->
+
+  <!-- LAYER 3: REPORT -->
+  <div class="layer hidden" id="layer-report">
+    <div class="controls" style="flex-wrap:wrap;gap:12px;align-items:center;">
+      <div class="control-group">
+        <label>Time Range</label>
+        <div class="toggle-group">
+          <button class="toggle-btn report-range-btn" data-days="14">2 Wks</button>
+          <button class="toggle-btn report-range-btn active" data-days="30">1 Mo</button>
+          <button class="toggle-btn report-range-btn" data-days="91">3 Mo</button>
+          <button class="toggle-btn report-range-btn" data-days="182">6 Mo</button>
+          <button class="toggle-btn report-range-btn" data-days="365">1 Yr</button>
+          <button class="toggle-btn report-range-btn" data-days="0">All Time</button>
+          <button class="toggle-btn report-range-btn" data-days="custom">Custom</button>
+        </div>
+        <div id="reportCustomRange" style="display:none;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+          <input type="date" id="reportCustomStart" style="background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);padding:5px 8px;border-radius:6px;font-size:12px;font-family:inherit;outline:none;">
+          <span style="color:var(--text-muted);">→</span>
+          <input type="date" id="reportCustomEnd" style="background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);padding:5px 8px;border-radius:6px;font-size:12px;font-family:inherit;outline:none;">
+        </div>
+      </div>
+      <div class="control-group" style="margin-left:auto;display:flex;align-items:center;gap:12px;">
+        <button class="btn btn--generate" id="generateReport">
+          <span class="btn-icon">⚡</span> Generate Intel Briefing
+        </button>
+        <span class="report-status" id="reportStatus"></span>
+      </div>
+    </div>
+    <!-- ACTION SIGNALS PANEL — auto-loads when Intel Report tab is opened -->
+    <div id="actionSignalsPanel" style="margin-bottom:28px;">
+      <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px;">
+        <h2 style="font-family:'Orbitron',sans-serif;font-size:14px;font-weight:700;
+          letter-spacing:0.12em;color:var(--accent);margin:0;text-transform:uppercase;">
+          ⚡ Command Intelligence — Action Signals
+        </h2>
+        <span id="actionSignalsCount" style="font-size:11px;color:var(--text-muted);"></span>
+      </div>
+      <p style="font-size:11px;color:var(--text-muted);margin:0 0 14px;">
+        Auto-generated from current date range. Updated each session.
+      </p>
+      <div id="actionSignalsList">
+        <div style="color:var(--text-muted);font-size:12px;padding:16px 0;">
+          <span class="loading-spinner"></span> Scanning for threats...
+        </div>
+      </div>
+      <div class="explainer" style="margin-top:12px;">
+        <strong>How to read Action Signals:</strong>
+        <strong>🔴 Cut Consideration</strong> = sustained, statistically confirmed elevation (3+ weeks, z&gt;2, hate rate &gt;20%) — flag for merch review.
+        <strong>🟢 Fix Targeting</strong> = curation problem, not product — majority of hated items were "not my style"; review stylist picks before cutting inventory.
+        <strong>🟡 Watch</strong> = early warning, elevated but not yet statistically confirmed — check again next period.
+      </div>
+    </div>
+
+    <div class="report-content" id="reportContent">
+      <div class="report-placeholder">
+        <div class="report-placeholder__icon">📋</div>
+        <p>Hit "Generate Intel Briefing" to compile a full analysis of Dark Side activity.<br>
+        The report will rank threats, flag outlier stylists, and recommend tactical responses.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- LAYER 3: CHAT -->
+  <div class="layer hidden" id="layer-chat">
+    <div class="chat-container">
+      <div class="chat-header">
+        <div class="droid-avatar">🤖</div>
+        <div>
+          <strong>TB-3PO — ThreadBeast Protocol Droid</strong>
+          <div class="chat-subtitle">Ask me anything about your feedback data. I compute answers from real data, not the archives.</div>
+        </div>
+      </div>
+      <div class="chat-messages" id="chatMessages">
+        <div class="chat-message chat-message--bot">
+          <div class="chat-avatar">🤖</div>
+          <div class="chat-bubble">
+            Greetings! I am TB-3PO, your ThreadBeast Protocol Droid. I am fluent in over six million forms of data analysis. How may I assist you today?
+          </div>
+        </div>
+      </div>
+      <div class="chat-suggestions" id="chatSuggestions">
+        <button class="suggestion-btn" data-q="What's the overall hate-it rate this month?">What's the overall hate-it rate this month?</button>
+        <button class="suggestion-btn" data-q="Which brand has the highest hate-it rate?">Which brand has the highest hate-it rate?</button>
+        <button class="suggestion-btn" data-q="How do Box 1 customers compare to repeat customers?">How do Box 1 customers compare to repeat?</button>
+        <button class="suggestion-btn" data-q="Which stylists need attention?">Which stylists need attention?</button>
+        <button class="suggestion-btn" data-q="What's driving the hate-it rate spike recently?">What's driving the recent spike?</button>
+      </div>
+      <div class="chat-input-row">
+        <input type="text" id="chatInput" placeholder="Ask TB-3PO a question about your data..." autocomplete="off">
+        <button class="btn btn--send" id="chatSend">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

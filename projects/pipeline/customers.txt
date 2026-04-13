@@ -1,0 +1,6 @@
+# One customer email per line. Blank lines and lines starting with '#' are ignored.
+# The Docker build runs `python3 run_customer.py <email>` for each line.
+#
+# Example:
+porterg2003@gmail.com
+frankiejm2345@gmail.com

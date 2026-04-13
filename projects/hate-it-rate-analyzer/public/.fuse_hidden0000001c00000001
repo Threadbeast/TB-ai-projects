@@ -1,0 +1,3301 @@
+/* ============================================
+   HATE IT RATE COMMAND CENTER — Frontend
+   ============================================ */
+
+// --- API base path ---
+// Auto-detects whether the app is served standalone or behind the /analyzer/
+// reverse proxy so API fetches resolve correctly in both environments.
+const API_BASE = window.location.pathname.startsWith('/analyzer')
+  ? '/analyzer/api'
+  : '/api';
+
+// --- State ---
+let state = {
+  ratingType: 'item',
+  timeView: 'received',
+  dateRange: 14,
+  customStart: null,
+  customEnd: null,
+  dimension: '',       // '' = Overall (no dimension breakdown)
+  drillStack: [],      // [{dimension, value}]
+  trendChart: null,
+  distChart: null,
+  activeLayer: 'box-health'   // default tab on load
+};
+
+// --- Box Health state (charts + toggle selections) ---
+const bhState = {
+  styleSentiment:   'hate',
+  valueSentiment:   'hate',
+  distCustomerType: 'new',
+  driverDimension:  'Stylist',
+  bhDateDays:       91,   // default: last 3 months; 0 = all time; -1 = custom
+  bhCustomStart:    null,
+  bhCustomEnd:      null,
+  charts: { trend: null, style: null, value: null, fit: null, dist: null, tenure: null },
+  lastData:    null,
+  lastDrivers: {}
+};
+
+// ============================================================
+// WEEK LABEL UTILITIES
+// ============================================================
+
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+/**
+ * Format a week label from its start-date string.
+ * The start date is whatever the backend sends (currently Monday-aligned).
+ * Returns e.g. "Mar 2–8", "Mar 30–Apr 5", "Mar 23–29 (in progress)"
+ */
+function formatWeekLabel(weekStartStr) {
+  // Parse as local midnight to avoid UTC-offset day shifts
+  const start = new Date(weekStartStr + 'T00:00:00');
+  const end   = new Date(weekStartStr + 'T00:00:00');
+  end.setDate(start.getDate() + 6);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const label = start.getMonth() === end.getMonth()
+    ? `${MONTHS[start.getMonth()]} ${start.getDate()}–${end.getDate()}`
+    : `${MONTHS[start.getMonth()]} ${start.getDate()}–${MONTHS[end.getMonth()]} ${end.getDate()}`;
+
+  // Append "(in progress)" if today falls within this week
+  return (today >= start && today <= end) ? label + ' (in progress)' : label;
+}
+
+/**
+ * Snap a date string to a Sun–Sat week boundary.
+ * direction='start' → back to nearest Sunday
+ * direction='end'   → forward to nearest Saturday
+ */
+function snapToWeekBoundary(dateStr, direction) {
+  const d = new Date(dateStr + 'T00:00:00');
+  const day = d.getDay(); // 0=Sun … 6=Sat
+  if (direction === 'start') {
+    d.setDate(d.getDate() - day);           // back to Sunday
+  } else {
+    d.setDate(d.getDate() + (6 - day));     // forward to Saturday
+  }
+  return d.toISOString().split('T')[0];
+}
+
+// --- Plain-English explainers for non-technical users ---
+const EXPLAINERS = {
+  trend: `<div class="explainer">
+    <strong>What this shows:</strong> Each bar is one week. Taller red bars = more customers hated their items that week.
+    If bars are getting taller over time, something is going wrong and we need to investigate.
+    <strong>Dig deeper:</strong> Look for spikes — then switch dimensions below to see what brand, stylist, or category caused it.
+  </div>`,
+  distribution: `<div class="explainer">
+    <strong>What this shows:</strong> How all ratings break down — red (1-2) means "Hate It," yellow (3) is neutral, green (4-5) is "Love It."
+    We want the green slice to be as big as possible.
+    <strong>Dig deeper:</strong> If the red slice is growing, check which dimension is driving it in the table below.
+  </div>`,
+  drivers: `<div class="explainer">
+    <strong>What this shows:</strong> Every value in the selected dimension ranked by how much it's hurting (or helping) feedback scores.
+    Red rows are performing <em>worse</em> than average. Green rows are performing <em>better</em> than average.
+    <br><br>
+    <strong>Lift vs Baseline:</strong> How much higher or lower this group's hate-it rate is compared to the overall average.
+    Example: if the overall hate-it rate is 20% and Brand X is at 30%, Brand X has a <em>+50% lift</em> — customers hate Brand X items 50% more than normal.
+    <br><br>
+    <strong>Z-Score:</strong> Think of this as a "confidence score." It measures how far this group's hate-it rate is from the average, adjusted for how many ratings it has.
+    A Z-Score above 2 or below -2 means the pattern is statistically real — not a fluke.
+    Low volume groups can have a sky-high hate rate but a low Z-Score because we don't have enough data to be sure.
+    High volume groups with even a small lift will have a high Z-Score because we've seen it consistently.
+    <em>Rule of thumb: trust the Z-Score over the raw rate when deciding what to act on.</em>
+    <br><br>
+    <strong>Significant:</strong> A green or red "Significant" badge means the Z-Score crossed the threshold where we can trust the pattern with 95% confidence.
+    "Not significant" doesn't mean it's fine — it just means we need more data before we can be sure.
+    <br><br>
+    <strong>Dig deeper:</strong> Click "Drill" on any row to break that group down further.
+  </div>`,
+  earlyWarning: `<div class="explainer">
+    <strong>What this shows:</strong> Boxes we shipped recently and how feedback is coming in so far.
+    Because customers take 1-3 weeks to rate, recent shipments won't have all their ratings yet.
+    If a recent week already shows a high hate-it rate with only 30% of ratings in, that's an early warning sign.
+    <strong>Dig deeper:</strong> Watch weeks flagged as "Alert" — if the rate stays high as more ratings come in, we have a confirmed problem.
+  </div>`,
+  enrichment: `<div class="explainer">
+    <strong>What this shows:</strong> For items customers hated in this group, <em>why</em> they hated them —
+    was it the wrong style? Poor quality? Bad fit? Customer comments give us direct quotes.
+    <strong>Dig deeper:</strong> If "Not me" is high under Style Accuracy, it's a curation/stylist issue.
+    If "Poor" is high under Quality, it's a sourcing/brand issue.
+  </div>`
+};
+
+// --- Init ---
+document.addEventListener('DOMContentLoaded', async () => {
+  setupControls();
+  setupLayerNav();
+  setupBHToggles();
+  setupLagControls();      // Box Health Lag Analysis tab controls
+  setupItemLagControls();  // Item Health Lag Analysis tab controls
+  setupReportControls();   // Intel Report time range controls
+  setupChat();
+  setupForceRefresh();
+  await loadDimensions();
+  loadBoxHealth();         // Box Health is the default tab
+  loadCacheStatus();
+});
+
+// --- Cache status ---
+async function loadCacheStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/cache/status');
+    const info = await res.json();
+    const el = document.getElementById('cacheInfo');
+    if (!el) return;
+    if (!info.exists) {
+      el.textContent = 'LIVE / BQ';
+      el.className = 'cache-info cache-live';
+    } else if (info.stale) {
+      el.textContent = `CACHE STALE (${info.ageMinutes}m)`;
+      el.className = 'cache-info cache-stale';
+    } else {
+      const h = Math.floor(info.ageMinutes / 60);
+      const m = info.ageMinutes % 60;
+      const age = h > 0 ? `${h}h ${m}m` : `${m}m`;
+      el.textContent = `CACHE ${age} OLD · ${info.sizeMB}MB`;
+      el.className = 'cache-info cache-fresh';
+    }
+  } catch (e) { /* silent */ }
+}
+
+// --- Force Refresh button ---
+function setupForceRefresh() {
+  const btn = document.getElementById('forceRefresh');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.classList.add('refreshing');
+    btn.textContent = '↺ Clearing cache...';
+
+    try {
+      await fetch(`${API_BASE}/cache/clear', { method: 'POST' });
+      btn.textContent = '↺ Fetching from BQ...';
+
+      // Poll until data is ready (server reloads in background)
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        try {
+          const res = await fetch(`${API_BASE}/summary');
+          const data = await res.json();
+          if (data.totalRated > 0) {
+            clearInterval(poll);
+            btn.disabled = false;
+            btn.classList.remove('refreshing');
+            btn.textContent = '↺ Force Refresh';
+            loadDashboard();
+            loadCacheStatus();
+          } else if (attempts > 60) {
+            clearInterval(poll);
+            btn.disabled = false;
+            btn.classList.remove('refreshing');
+            btn.textContent = '↺ Force Refresh';
+          }
+        } catch (e) { /* keep polling */ }
+      }, 3000);
+    } catch (e) {
+      btn.disabled = false;
+      btn.classList.remove('refreshing');
+      btn.textContent = '↺ Force Refresh';
+    }
+  });
+}
+
+async function loadDimensions() {
+  let attempts = 0;
+  while (attempts < 10) {
+    try {
+      const res = await fetch(`${API_BASE}/dimensions');
+      const data = await res.json();
+      const select = document.getElementById('dimensionSelect');
+      // Always lead with Overall option
+      select.innerHTML = '<option value="">Overall</option>';
+      for (const dim of data.dimensions) {
+        const opt = document.createElement('option');
+        opt.value = dim;
+        opt.textContent = getDimensionLabel(dim);
+        select.appendChild(opt);
+      }
+      // Keep current dimension if valid; otherwise default to Overall
+      const validDims = ['', ...data.dimensions];
+      if (!validDims.includes(state.dimension)) {
+        state.dimension = '';
+      }
+      select.value = state.dimension;
+      return;
+    } catch (e) {
+      attempts++;
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+}
+
+// Route date-range triggered reloads to whichever tab is active
+function triggerReload() {
+  if (state.activeLayer === 'box-health') loadBoxHealth();
+  else if (state.activeLayer === 'item-health') loadDashboard();
+  // report / chat don't reload on date change
+}
+
+// --- Controls ---
+function setupControls() {
+  document.getElementById('dateRange').addEventListener('change', (e) => {
+    const val = e.target.value;
+    if (val === 'custom') {
+      document.getElementById('customStart').classList.remove('hidden');
+      document.getElementById('customEnd').classList.remove('hidden');
+    } else {
+      document.getElementById('customStart').classList.add('hidden');
+      document.getElementById('customEnd').classList.add('hidden');
+      state.dateRange = parseInt(val);
+      state.customStart = null;
+      state.customEnd = null;
+      state.drillStack = [];
+      triggerReload();
+    }
+  });
+
+  document.getElementById('customStart').addEventListener('change', (e) => {
+    const snapped = snapToWeekBoundary(e.target.value, 'start');
+    e.target.value = snapped;
+    state.customStart = snapped;
+    if (state.customEnd) triggerReload();
+  });
+
+  document.getElementById('customEnd').addEventListener('change', (e) => {
+    const snapped = snapToWeekBoundary(e.target.value, 'end');
+    e.target.value = snapped;
+    state.customEnd = snapped;
+    if (state.customStart) triggerReload();
+  });
+
+  // Rating type toggle
+  document.querySelectorAll('[data-rating]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-rating]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.ratingType = btn.dataset.rating;
+      loadDashboard();
+    });
+  });
+
+  // Time view toggle
+  document.querySelectorAll('[data-view]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-view]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.timeView = btn.dataset.view;
+      loadDashboard();
+    });
+  });
+
+  // Dimension select
+  document.getElementById('dimensionSelect').addEventListener('change', (e) => {
+    state.dimension = e.target.value;
+    state.drillStack = [];
+    loadDashboard();
+    // Keep lag breakdown in sync if already loaded
+    if (itemLagState.loaded) {
+      updateILDimLabel(state.dimension || 'product_brand');
+      loadItemLagAnalysis();
+    }
+  });
+}
+
+// --- Layer Navigation ---
+function setupLayerNav() {
+  // Main tabs
+  document.querySelectorAll('.layer-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.layer').forEach(l => l.classList.add('hidden'));
+      document.getElementById(`layer-${btn.dataset.layer}`).classList.remove('hidden');
+
+      // Track active layer and lazy-load on first switch
+      state.activeLayer = btn.dataset.layer;
+      if (state.activeLayer === 'box-health')  loadBoxHealth();
+      if (state.activeLayer === 'item-health') loadDashboard();
+      if (state.activeLayer === 'report')      loadActionSignals();
+    });
+  });
+
+  // Sub-tabs — scoped to their parent .layer so Box Health and Item Health don't interfere
+  document.querySelectorAll('.sub-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      // Deactivate siblings only within the same sub-nav
+      const siblingBtns = btn.closest('.sub-nav').querySelectorAll('.sub-btn');
+      siblingBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      // Hide all sub-panels within the same parent layer, show the target one
+      const parentLayer = btn.closest('.layer');
+      parentLayer.querySelectorAll('.sub-panel').forEach(p => p.classList.add('hidden'));
+      document.getElementById(`sub-${btn.dataset.sub}`).classList.remove('hidden');
+
+      // Lazy-load Lag Analysis on first activation
+      if (btn.dataset.sub === 'box-lag'  && !lagState.loaded)     loadLagAnalysis();
+      if (btn.dataset.sub === 'item-lag' && !itemLagState.loaded)  loadItemLagAnalysis();
+    });
+  });
+}
+
+// --- Date range helpers ---
+function getDateRange() {
+  if (state.customStart && state.customEnd) {
+    return { start: state.customStart, end: state.customEnd };
+  }
+  const end = new Date();
+  const start = new Date(end.getTime() - state.dateRange * 86400000);
+  return {
+    start: start.toISOString().split('T')[0],
+    end: end.toISOString().split('T')[0]
+  };
+}
+
+// --- Load Dashboard ---
+async function loadDashboard() {
+  const { start, end } = getDateRange();
+  const params = new URLSearchParams({
+    start, end,
+    ratingType: state.ratingType,
+    timeView: state.timeView
+  });
+
+  // Determine if we're drilling
+  let drillValue = null;
+  let dimension = state.dimension;
+  if (state.drillStack.length > 0) {
+    const last = state.drillStack[state.drillStack.length - 1];
+    drillValue = last.value;
+    dimension = last.subDimension || state.dimension;
+    params.set('drillValue', drillValue);
+    params.set('dimension', last.dimension);
+  }
+
+  const isOverall = !dimension && state.drillStack.length === 0;
+
+  try {
+    // Always fetch summary, trend, baselines; skip drivers fetch in Overall mode
+    const fetches = [
+      fetch(`${API_BASE}/summary?${params}`),
+      isOverall ? Promise.resolve(null) : fetch(`${API_BASE}/drivers?${params}&dimension=${dimension}`),
+      fetch(`${API_BASE}/trend?start=${start}&end=${end}&ratingType=${state.ratingType}`),
+      fetch(`${API_BASE}/baselines?start=${start}&end=${end}&ratingType=${state.ratingType}`)
+    ];
+    const [summaryRes, driversRes, trendRes, baselinesRes] = await Promise.all(fetches);
+
+    const summary   = await summaryRes.json();
+    const drivers   = driversRes ? await driversRes.json() : null;
+    const trendData = trendRes.ok ? await trendRes.json() : null;
+    const baselines = baselinesRes.ok ? await baselinesRes.json() : null;
+
+    updateSummaryCards(summary, baselines);
+    updateTrendChart(trendData ? trendData.trend : summary.weeklyTrend, baselines);
+    updateDistChart(summary.baseline);
+    updateDrillPath();
+    updateDataStatus(summary.totalRated);
+
+    if (isOverall) {
+      // Overall mode — hide driver table and enrichment, keep heatmap + charts
+      const driverSection = document.getElementById('itemDriverSection');
+      if (driverSection) driverSection.style.display = 'none';
+      document.getElementById('enrichmentPanel').style.display = 'none';
+      document.getElementById('drillPath').innerHTML = '';
+    } else {
+      const driverSection = document.getElementById('itemDriverSection');
+      if (driverSection) driverSection.style.display = '';
+      updateDriverTable(drivers, dimension);
+    }
+
+    loadBrandCategoryHeatmap();
+
+    // Show early warning if shipped cohort view
+    if (state.timeView === 'shipped') {
+      const ewRes = await fetch(`${API_BASE}/early-warning?ratingType=${state.ratingType}`);
+      const ew = await ewRes.json();
+      showEarlyWarning(ew);
+    } else {
+      document.getElementById('earlyWarningSection').style.display = 'none';
+    }
+
+  } catch (err) {
+    console.error('Failed to load dashboard:', err);
+    document.getElementById('dataStatus').textContent = 'Connection lost...';
+  }
+}
+
+// --- Update Summary Cards ---
+// baselines = { prior_period, year_ago, rolling_12mo, rolling_30d } from /api/baselines
+function updateSummaryCards(summary, baselines) {
+  const rate = summary.baseline.rate;
+  const hateCount = summary.baseline.hateCount;
+  const total = summary.baseline.total;
+  const loveRate = summary.baseline.loveCount / total;
+
+  document.getElementById('hateRate').textContent = (rate * 100).toFixed(1) + '%';
+  document.getElementById('totalRated').textContent = total.toLocaleString();
+  // Label changes based on rating type: items vs boxes (deduped by package)
+  const isBox = state.ratingType === 'box';
+  const volumeLabel = document.querySelector('.card--volume .card__label');
+  if (volumeLabel) volumeLabel.textContent = isBox ? 'Boxes Rated' : 'Items Rated';
+  document.getElementById('hateCount').textContent = `${hateCount.toLocaleString()} hate ${isBox ? 'box' : 'item'} ratings`;
+  document.getElementById('loveRate').textContent = (loveRate * 100).toFixed(1) + '%';
+
+  // Delta badges from BQ baselines — hate rate card
+  const deltaEl = document.getElementById('hateRateDeltas');
+  if (deltaEl && baselines) {
+    deltaEl.innerHTML = [
+      baselines.prior_period ? formatDeltaBQ(rate, baselines.prior_period, 'prior period') : null,
+      baselines.rolling_30d  ? formatDeltaBQ(rate, baselines.rolling_30d,  '30d avg')      : null,
+      baselines.rolling_12mo ? formatDeltaBQ(rate, baselines.rolling_12mo, '12mo avg')     : null,
+      baselines.year_ago && baselines.year_ago.total >= 20
+        ? formatDeltaBQ(rate, baselines.year_ago, 'year ago') : null
+    ].filter(Boolean).join('');
+  }
+
+  // Delta badges — love rate card
+  // Convert hate-rate baselines to love-rate equivalents using current love/nonhate ratio
+  const loveOfNonHate = summary.baseline.total > 0
+    ? summary.baseline.loveCount / (summary.baseline.total - summary.baseline.hateCount || 1)
+    : 0.85;
+  const loveDeltaEl = document.getElementById('loveRateDeltas');
+  if (loveDeltaEl && baselines) {
+    // Build love-rate-equivalent refs from hate baselines
+    const toLoveRef = (ref) => {
+      if (!ref || ref.total < 20) return null;
+      const nonHate = ref.total - ref.hate;
+      return { rate: (nonHate / ref.total) * loveOfNonHate, total: ref.total };
+    };
+    loveDeltaEl.innerHTML = [
+      baselines.prior_period ? formatDeltaBQ(loveRate, toLoveRef(baselines.prior_period), 'prior period', true) : null,
+      baselines.rolling_30d  ? formatDeltaBQ(loveRate, toLoveRef(baselines.rolling_30d),  '30d avg',      true) : null,
+      baselines.rolling_12mo ? formatDeltaBQ(loveRate, toLoveRef(baselines.rolling_12mo), '12mo avg',     true) : null,
+      baselines.year_ago && baselines.year_ago.total >= 20
+        ? formatDeltaBQ(loveRate, toLoveRef(baselines.year_ago), 'year ago', true) : null
+    ].filter(Boolean).join('');
+  }
+
+  // Threat level
+  let threat, desc, cls;
+  if (rate < 0.10) { threat = 'ALL CLEAR'; desc = 'The Force is strong'; cls = 'threat--low'; }
+  else if (rate < 0.15) { threat = 'ELEVATED'; desc = 'Disturbance in the Force'; cls = 'threat--moderate'; }
+  else if (rate < 0.20) { threat = 'HIGH'; desc = 'Dark Side rising'; cls = 'threat--high'; }
+  else { threat = 'CRITICAL'; desc = 'The Dark Side dominates'; cls = 'threat--critical'; }
+
+  const threatEl = document.getElementById('threatLevel');
+  threatEl.textContent = threat;
+  threatEl.className = 'card__value ' + cls;
+  document.getElementById('threatDesc').textContent = desc;
+}
+
+// invertColor: for love rate, up = good (green), down = bad (red)
+function formatDeltaBQ(currentRate, ref, label, invertColor = false) {
+  if (!ref || !ref.total || ref.total < 20) return '';
+  const pp = (currentRate - ref.rate) * 100;
+  if (Math.abs(pp) < 0.05) return ''; // Flat — skip
+  const goingUp = pp > 0;
+  const isBad = invertColor ? !goingUp : goingUp;
+  const cls = isBad ? 'delta--up' : 'delta--down';
+  const arrow = goingUp ? '▲' : '▼';
+  const sign = goingUp ? '+' : '';
+  return `<span class="delta-badge ${cls}">${arrow} ${sign}${pp.toFixed(1)}pp <span class="delta-label">${label}</span></span>`;
+}
+
+// --- Trend Chart ---
+function updateTrendChart(trend, rollingBaselines) {
+  const ctx = document.getElementById('trendChart').getContext('2d');
+
+  if (state.trendChart) state.trendChart.destroy();
+
+  // Only show last 52 weeks for readability, but keep all for context
+  const display = trend.slice(-52);
+
+  const labels = display.map(t => formatWeekLabel(t.week));
+
+  const datasets = [
+    // Main bars — current hate rate per week
+    {
+      type: 'bar',
+      label: 'Hate It Rate',
+      data: display.map(t => +(t.hateRate * 100).toFixed(2)),
+      backgroundColor: display.map(t =>
+        t.total < 30         ? 'rgba(100,120,150,0.35)' :  // low volume — gray
+        t.hateRate > 0.18    ? 'rgba(255,45,45,0.85)'   :
+        t.hateRate > 0.14    ? 'rgba(255,45,45,0.55)'   :
+                               'rgba(255,45,45,0.35)'
+      ),
+      borderColor: 'rgba(255,45,45,0.8)',
+      borderWidth: 1,
+      borderRadius: 2,
+      order: 4
+    },
+    // 4-week trailing average line
+    {
+      type: 'line',
+      label: '4-Week Avg',
+      data: display.map(t => t.trailing4wAvg != null ? +(t.trailing4wAvg * 100).toFixed(2) : null),
+      borderColor: 'rgba(0,180,255,0.7)',
+      borderWidth: 2,
+      borderDash: [4, 3],
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      fill: false,
+      tension: 0.4,
+      spanGaps: true,
+      order: 2
+    },
+    // Year-ago same week — ghost line
+    {
+      type: 'line',
+      label: 'Year Ago',
+      data: display.map(t => t.yearAgoRate != null ? +(t.yearAgoRate * 100).toFixed(2) : null),
+      borderColor: 'rgba(255,179,0,0.5)',
+      borderWidth: 1.5,
+      borderDash: [6, 4],
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      fill: false,
+      tension: 0.4,
+      spanGaps: false,
+      order: 3
+    }
+  ];
+
+  // Flat reference lines from BQ baselines
+  if (rollingBaselines) {
+    if (rollingBaselines.rolling_30d && rollingBaselines.rolling_30d.total >= 20) {
+      const r = rollingBaselines.rolling_30d.rate * 100;
+      datasets.push({
+        type: 'line', label: '30d Baseline',
+        data: display.map(() => +r.toFixed(2)),
+        borderColor: 'rgba(0,230,118,0.5)', borderWidth: 1.5,
+        borderDash: [6, 4], pointRadius: 0, fill: false, order: 1
+      });
+    }
+    if (rollingBaselines.rolling_12mo && rollingBaselines.rolling_12mo.total >= 20) {
+      const r = rollingBaselines.rolling_12mo.rate * 100;
+      datasets.push({
+        type: 'line', label: '12mo Baseline',
+        data: display.map(() => +r.toFixed(2)),
+        borderColor: 'rgba(0,230,118,0.25)', borderWidth: 1,
+        borderDash: [10, 5], pointRadius: 0, fill: false, order: 1
+      });
+    }
+  }
+
+  state.trendChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          align: 'end',
+          labels: {
+            color: '#6a88b0',
+            font: { size: 10 },
+            boxWidth: 20,
+            padding: 10,
+            usePointStyle: true
+          }
+        },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              if (!items.length) return '';
+              const t = display[items[0].dataIndex];
+              return t ? formatWeekLabel(t.week) : items[0].label;
+            },
+            label: (ctx) => {
+              if (ctx.parsed.y == null) return null;
+              return `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%`;
+            },
+            afterBody: (items) => {
+              const bar = items.find(i => i.dataset.label === 'Hate It Rate');
+              if (bar && display[bar.dataIndex]) {
+                const t = display[bar.dataIndex];
+                const volNote = t.total < 30 ? ' ⚠ low vol' : '';
+                return [`${t.hateCount} hate of ${t.total} rated${volNote}`];
+              }
+              return [];
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: false,
+          ticks: { callback: v => v + '%', color: '#6a88b0', font: { size: 11 } },
+          grid: { color: 'rgba(0, 180, 255, 0.06)' }
+        },
+        x: {
+          ticks: { color: '#6a88b0', font: { size: 10 }, maxTicksLimit: 20 },
+          grid: { display: false }
+        }
+      }
+    }
+  });
+
+  // Add explainer after the chart
+  const container = document.getElementById('trendChart').closest('.chart-container');
+  removeExplainer(container);
+  container.insertAdjacentHTML('beforeend', EXPLAINERS.trend);
+}
+
+// --- Distribution Chart ---
+function updateDistChart(baseline) {
+  const ctx = document.getElementById('distChart').getContext('2d');
+
+  if (state.distChart) state.distChart.destroy();
+
+  state.distChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Hate It (1-2)', 'Neutral (3)', 'Love It (4-5)'],
+      datasets: [{
+        data: [baseline.hateCount, baseline.neutralCount, baseline.loveCount],
+        backgroundColor: ['rgba(239, 68, 68, 0.8)', 'rgba(245, 158, 11, 0.8)', 'rgba(34, 197, 94, 0.8)'],
+        borderColor: ['#ef4444', '#f59e0b', '#22c55e'],
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      cutout: '60%',
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { color: '#8899b3', padding: 12, font: { size: 11 } }
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+              const pct = ((ctx.parsed / total) * 100).toFixed(1);
+              return `${ctx.label}: ${ctx.parsed.toLocaleString()} (${pct}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+
+  const container = document.getElementById('distChart').closest('.chart-container');
+  removeExplainer(container);
+  container.insertAdjacentHTML('beforeend', EXPLAINERS.distribution);
+}
+
+// --- Driver Table ---
+function updateDriverTable(data, dimension) {
+  const tbody = document.getElementById('driverTableBody');
+  const dimLabel = getDimensionLabel(dimension);
+
+  // Update section title
+  const section = document.querySelector('.drivers-section .section-title');
+  section.innerHTML = `⚡ Top Dark Side Agents by ${dimLabel} — Ranked by Threat`;
+
+  if (!data.drivers || data.drivers.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:24px;">No data for this selection</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.drivers.map((d, i) => {
+    const rateWidth = Math.min(d.hateRate * 500, 100);
+    const liftPct = (d.lift * 100).toFixed(1);
+    const liftClass = d.lift > 0 ? 'lift-positive' : 'lift-negative';
+    const liftSign = d.lift > 0 ? '+' : '';
+    const sigBadge = d.significant
+      ? (d.direction === 'above' ? '<span class="badge badge--sig">⚠️ Significant</span>' : '<span class="badge badge--good">✅ Significant</span>')
+      : '<span class="badge badge--not">Not significant</span>';
+    const rowClass = d.direction === 'above' ? 'above' : 'below';
+
+    // Determine sub-dimension for drill-down
+    const subDim = getSubDimension(dimension);
+
+    return `<tr class="${rowClass}">
+      <td>${i + 1}</td>
+      <td><strong>${escapeHtml(d.value)}</strong></td>
+      <td>
+        <span class="rate-bar rate-bar--hate" style="width:${rateWidth}px"></span>
+        ${(d.hateRate * 100).toFixed(1)}%
+      </td>
+      <td>${d.total.toLocaleString()}</td>
+      <td><span class="${liftClass}">${liftSign}${liftPct}%</span></td>
+      <td>${d.zScore.toFixed(2)}</td>
+      <td>${sigBadge}</td>
+      <td>${subDim ? `<button class="drill-btn" onclick="drillDown('${dimension}', '${escapeAttr(d.value)}', '${subDim}')">Drill ▸</button>` : ''}</td>
+    </tr>`;
+  }).join('');
+
+  // Add explainer
+  const section2 = document.getElementById('itemDriverSection');
+  removeExplainer(section2);
+  section2.insertAdjacentHTML('beforeend', EXPLAINERS.drivers);
+
+  // Show enrichment for top driver if above baseline
+  const topAbove = data.drivers.find(d => d.direction === 'above' && d.significant);
+  if (topAbove) {
+    showEnrichment(topAbove);
+  } else {
+    document.getElementById('enrichmentPanel').style.display = 'none';
+  }
+}
+
+// --- Drill Down ---
+function drillDown(dimension, value, subDimension) {
+  state.drillStack.push({ dimension, value, subDimension });
+  state.dimension = subDimension;
+  document.getElementById('dimensionSelect').value = subDimension;
+  loadDashboard();
+}
+
+function drillUp(toIndex) {
+  state.drillStack = state.drillStack.slice(0, toIndex);
+  if (state.drillStack.length > 0) {
+    const last = state.drillStack[state.drillStack.length - 1];
+    state.dimension = last.subDimension;
+  } else {
+    state.dimension = document.getElementById('dimensionSelect').value;
+  }
+  loadDashboard();
+}
+
+function updateDrillPath() {
+  const container = document.getElementById('drillPath');
+  if (state.drillStack.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  let html = `<span class="drill-crumb" onclick="drillUp(0)">🏠 All</span>`;
+  state.drillStack.forEach((item, i) => {
+    html += `<span class="drill-sep">▸</span>`;
+    html += `<span class="drill-crumb" onclick="drillUp(${i + 1})">${getDimensionLabel(item.dimension)}: ${escapeHtml(item.value)}</span>`;
+  });
+  container.innerHTML = html;
+}
+
+// --- Sub-dimension mapping ---
+function getSubDimension(dim) {
+  const map = {
+    'Stylist': 'DayStyle',
+    'DayStyle': 'EveningStyle',
+    'EveningStyle': 'BottomFit',
+    'ShipAddrState': 'Stylist',
+    'customerType': 'Stylist',
+    'BoxNumber': 'Stylist',
+    'product_seasonality': 'Stylist',
+    'TopSize': 'DayStyle',
+    'WaistSize': 'BottomFit',
+    'Value': 'Stylist',
+    'Presentation': 'Stylist',
+    'ShopAt': 'DayStyle',
+    'product_brand': 'product_category',
+    'product_category': 'product_subcategory',
+    'product_subcategory': 'product_item_style',
+    'product_item_style': 'Stylist',
+    'product_color_style': 'DayStyle',
+    'product_sourcing': 'Stylist'
+  };
+  return map[dim] || null;
+}
+
+function getDimensionLabel(dim) {
+  const labels = {
+    'product_brand': 'Brand',
+    'product_category': 'Category',
+    'product_subcategory': 'Subcategory',
+    'product_item_style': 'Day Style',
+    'Stylist': 'Stylist',
+    'plan': 'Plan',
+    'customerType': 'New vs Recurring',
+    'BoxNumber': 'Box Number',
+    'product_color_style': 'Evening Style',
+    'product_seasonality': 'Ship Month',
+    'product_sourcing': 'Sourcing',
+    'ShipAddrState': 'State',
+    'DayStyle': 'Day Style',
+    'EveningStyle': 'Evening Style',
+    'BottomFit': 'Bottom Fit',
+    'TopSize': 'Top Size',
+    'WaistSize': 'Waist Size',
+    'Value': 'Value Rating',
+    'Presentation': 'Presentation Rating',
+    'ShopAt': 'Shop At'
+  };
+  return labels[dim] || dim;
+}
+
+// --- Early Warning ---
+function showEarlyWarning(data) {
+  const section = document.getElementById('earlyWarningSection');
+  section.style.display = 'block';
+
+  const tbody = document.getElementById('earlyWarningBody');
+  tbody.innerHTML = data.cohorts.map(c => {
+    let statusBadge;
+    if (c.completionRate < 0.3 && c.hateRate > 0.18) {
+      statusBadge = '<span class="status-badge status-badge--danger">🔴 HIGH ALERT</span>';
+    } else if (c.isEarlyWarning) {
+      statusBadge = '<span class="status-badge status-badge--alert">🟠 Watch</span>';
+    } else {
+      statusBadge = '<span class="status-badge status-badge--ok">🟢 Normal</span>';
+    }
+
+    const lowVol = c.rated < 30;
+    const rateCell = lowVol
+      ? `<span class="low-vol" title="Fewer than 30 ratings — not reliable yet">low vol</span>`
+      : `<span class="${c.hateRate > 0.15 ? 'lift-positive' : ''}">${(c.hateRate * 100).toFixed(1)}%</span>`;
+
+    return `<tr${lowVol ? ' class="low-vol-row"' : ''}>
+      <td>${formatWeekLabel(c.weekOf)}</td>
+      <td>${c.shipped.toLocaleString()}</td>
+      <td>${c.rated.toLocaleString()}</td>
+      <td>${(c.completionRate * 100).toFixed(0)}%</td>
+      <td>${rateCell}</td>
+      <td>${statusBadge}</td>
+    </tr>`;
+  }).join('');
+
+  // Add explainer
+  removeExplainer(section);
+  section.insertAdjacentHTML('beforeend', EXPLAINERS.earlyWarning);
+}
+
+// --- Enrichment Panel ---
+function showEnrichment(driver) {
+  const panel = document.getElementById('enrichmentPanel');
+  panel.style.display = 'block';
+  document.getElementById('enrichmentTarget').textContent = driver.value;
+
+  const enrich = driver.enrichment;
+
+  // Sentiment breakdown bar (all-rated style accuracy)
+  renderSentimentBreakdown(enrich);
+
+  // Style accuracy bars (hate items only — backward compat)
+  renderEnrichmentBars('enrichStyleAccuracy', enrich.styleAccuracy, {
+    'Not me': 'var(--dark-side)',
+    'Mostly me': 'var(--neutral)',
+    'Love it': 'var(--light-side)'
+  });
+
+  // Quality bars
+  renderEnrichmentBars('enrichQuality', enrich.quality, {
+    'Poor': 'var(--dark-side)',
+    'Good': 'var(--neutral)',
+    'Excellent': 'var(--light-side)'
+  });
+
+  // Fit bars
+  renderEnrichmentBars('enrichFit', enrich.fit, {
+    'Too small': 'var(--dark-side)',
+    'Too large': 'var(--dark-side)',
+    'Slightly small': 'var(--neutral)',
+    'Slightly large': 'var(--neutral)',
+    'Perfect': 'var(--light-side)'
+  });
+
+  // Comments — use commentsWithDates if available, fall back to sampleComments
+  const commentsEl = document.getElementById('enrichComments');
+  const withDates  = enrich.commentsWithDates || [];
+  const plain      = enrich.sampleComments    || [];
+
+  if (withDates.length > 0) {
+    commentsEl.innerHTML = withDates.map(c => {
+      const weekLabel = c.week ? `<span style="color:var(--text-muted);font-size:10px;margin-right:6px;">${formatWeekLabel(c.week)}</span>` : '';
+      return `<div class="comment-item">${weekLabel}"${escapeHtml(c.text)}"</div>`;
+    }).join('');
+  } else if (plain.length > 0) {
+    commentsEl.innerHTML = plain
+      .map(c => `<div class="comment-item">"${escapeHtml(c)}"</div>`).join('');
+  } else {
+    commentsEl.innerHTML = '<p style="color:var(--text-muted);font-size:12px;">No comments available for hate-rated items in this group.</p>';
+  }
+
+  // Add explainer
+  removeExplainer(panel);
+  panel.insertAdjacentHTML('beforeend', EXPLAINERS.enrichment);
+}
+
+function renderEnrichmentBars(elId, data, colorMap) {
+  const el = document.getElementById(elId);
+  const total = Object.values(data).reduce((a, b) => a + b, 0);
+  if (total === 0) {
+    el.innerHTML = '<p style="color:var(--text-muted);font-size:12px;">No data</p>';
+    return;
+  }
+
+  el.innerHTML = Object.entries(data)
+    .sort((a, b) => b[1] - a[1])
+    .map(([label, count]) => {
+      const pct = (count / total * 100).toFixed(0);
+      const color = colorMap[label] || 'var(--accent)';
+      return `<div class="enrichment-bar">
+        <span class="enrichment-bar__label">${escapeHtml(label)}</span>
+        <div class="enrichment-bar__track">
+          <div class="enrichment-bar__fill" style="width:${pct}%;background:${color}"></div>
+        </div>
+        <span class="enrichment-bar__value">${pct}%</span>
+      </div>`;
+    }).join('');
+}
+
+// --- Data Status ---
+function updateDataStatus(total) {
+  const el = document.getElementById('dataStatus');
+  el.textContent = `Holocron: ${total.toLocaleString()} records`;
+  el.classList.add('loaded');
+}
+
+// --- Report Generation ---
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('generateReport').addEventListener('click', generateReport);
+});
+
+async function generateReport() {
+  const btn = document.getElementById('generateReport');
+  const status = document.getElementById('reportStatus');
+  const content = document.getElementById('reportContent');
+
+  btn.disabled = true;
+  status.innerHTML = '<span class="loading-spinner"></span> Compiling intelligence briefing...';
+
+  try {
+    // Use report-specific date range, not item health date range
+    const { start, end } = getReportDateRange();
+    const params = new URLSearchParams({ ratingType: state.ratingType });
+    if (start) params.set('start', start);
+    if (end)   params.set('end',   end);
+
+    // Fetch report, weekly breakdown, and action signals in parallel
+    const [reportRes, weeklyRes] = await Promise.all([
+      fetch(`${API_BASE}/report?${params}`),
+      fetch(`${API_BASE}/weekly-report?${params}`)
+    ]);
+    const report = await reportRes.json();
+    const weekly = weeklyRes.ok ? await weeklyRes.json() : null;
+
+    content.innerHTML = renderReport(report, start, end, weekly);
+
+    // Action signals loads independently — updates its own panel
+    loadActionSignals();
+
+    status.textContent = 'Briefing complete.';
+  } catch (err) {
+    status.textContent = 'Failed to generate report.';
+    console.error(err);
+  }
+
+  btn.disabled = false;
+}
+
+function renderReport(report, start, end, weekly) {
+  const rate = (report.baseline.rate * 100).toFixed(1);
+  const hateCount = report.baseline.hateCount;
+  const total = report.baseline.total;
+  const boxCount = weekly?.boxCount ?? null;
+
+  // Threat level
+  let threatLabel;
+  if (report.baseline.rate < 0.10) threatLabel = '🟢 LOW — The Force is with us';
+  else if (report.baseline.rate < 0.15) threatLabel = '🟡 ELEVATED — Stay vigilant';
+  else if (report.baseline.rate < 0.20) threatLabel = '🟠 HIGH — Dark Side activity detected';
+  else threatLabel = '🔴 CRITICAL — The Dark Side is strong';
+
+  // Top drivers
+  const topBad = report.topDrivers.filter(d => d.lift > 0 && d.significant).slice(0, 8);
+  const topGood = report.topDrivers.filter(d => d.lift < 0 && d.significant).slice(0, 5);
+
+  // Stylist outliers
+  const stylistOutliers = report.stylistVariance
+    .filter(s => s.direction === 'above' && s.significant)
+    .sort((a, b) => b.lift - a.lift)
+    .slice(0, 5);
+
+  const periodLabel = start && end ? `${start} → ${end}` : start ? `From ${start}` : 'All Time';
+  const boxCountStr = boxCount != null ? ` &nbsp;·&nbsp; <strong>${boxCount.toLocaleString()}</strong> boxes rated` : '';
+
+  let html = `<div class="report-body">
+    <h2>⚔️ Hate It Rate Intel Briefing</h2>
+    <p style="color:var(--text-muted);">Period: ${periodLabel} | Generated: ${new Date().toLocaleString()}</p>
+
+    <h3>📊 Top-Line Summary</h3>
+    <p><strong>What you need to know:</strong> This section gives you the big picture — is customer dissatisfaction going up, down, or staying flat?</p>
+    <p>Overall Hate It Rate: <span class="metric-highlight">${rate}%</span>
+    &nbsp;(${hateCount.toLocaleString()} hate ratings out of ${total.toLocaleString()} rated items${boxCountStr})</p>
+    <p>Threat Level: <strong>${threatLabel}</strong></p>
+    <p><strong>In plain English:</strong> Out of every 100 items customers rated, about ${Math.round(report.baseline.rate * 100)} were rated as "Hate It" (1 or 2 stars).
+    ${report.baseline.rate > 0.15 ? 'This is above our target — we need to take action.' : 'This is within an acceptable range, but we should watch the drivers below.'}</p>`;
+
+  // --- Weekly breakdown table ---
+  if (weekly && weekly.weeklyDrivers && weekly.weeklyDrivers.length > 0) {
+    html += `<h3>📅 Weekly Breakdown — Ranked by Impact</h3>
+    <p><strong>What you need to know:</strong> Each week's hate rate and the single biggest driver pulling it up. Weeks are ordered newest first.</p>
+    <table class="driver-table" style="margin-bottom:8px;">
+      <thead><tr>
+        <th>Week</th>
+        <th title="% of items rated 1-2 stars">Hate Rate</th>
+        <th>Items Rated</th>
+        <th>Hate Count</th>
+        <th title="Top single driver by statistical confidence for this week">Primary Driver</th>
+      </tr></thead>
+      <tbody>`;
+
+    for (const wk of weekly.weeklyDrivers) {
+      const hStyle  = wk.hateRate > 0.18 ? 'color:var(--dark-side);font-weight:600' :
+                      wk.hateRate < 0.12 ? 'color:var(--light-side)' : '';
+      const lowVol  = wk.total < 30;
+      let primaryDriver = '—';
+      if (wk.topDriver) {
+        const d = wk.topDriver;
+        const dimLabel = getDimensionLabel(d.dimension);
+        const liftPct  = (d.lift * 100).toFixed(0);
+        primaryDriver  = `<strong>${escapeHtml(dimLabel)}: ${escapeHtml(d.value)}</strong>
+          &nbsp;<span class="lift-positive">+${liftPct}%</span>
+          <span style="color:var(--text-muted);font-size:10px;">(${d.total} items, z=${d.zScore.toFixed(1)})</span>`;
+      }
+      html += `<tr${lowVol ? ' class="low-vol-row"' : ''}>
+        <td><strong>${formatWeekLabel(wk.week)}</strong></td>
+        <td style="${hStyle}">${lowVol ? '<span class="low-vol">low vol</span>' : (wk.hateRate*100).toFixed(1)+'%'}</td>
+        <td>${wk.total.toLocaleString()}</td>
+        <td>${wk.hateCount}</td>
+        <td style="font-size:12px;">${primaryDriver}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    html += `<p style="font-size:11px;color:var(--text-muted);">Weeks with fewer than 30 rated items are marked "low vol" — treat these as early signal only.</p>`;
+  }
+
+  html += `<h3>🎯 Key Drivers — What's Causing Negative Feedback</h3>
+    <p><strong>What you need to know:</strong> These are the specific brands, categories, stylists, etc. that are driving the most negative feedback.
+    Items at the top are our biggest problems. "Lift" tells you how much worse something is compared to our average.</p>`;
+
+  if (topBad.length > 0) {
+    html += '<ul>';
+    for (const d of topBad) {
+      const dimLabel = getDimensionLabel(d.dimension);
+      const liftPct = (d.lift * 100).toFixed(0);
+      const dRate = (d.hateRate * 100).toFixed(1);
+      const action = getRecommendedAction(d.dimension, d.value, d.lift);
+      html += `<li><strong>${dimLabel}: ${escapeHtml(d.value)}</strong> — Hate It Rate: <span class="metric-highlight">${dRate}%</span> (${liftPct}% above baseline, ${d.total} items)
+        <br><em>→ Recommended action: ${action}</em></li>`;
+    }
+    html += '</ul>';
+  } else {
+    html += '<p>No statistically significant negative drivers found for this period. 🎉</p>';
+  }
+
+  if (topGood.length > 0) {
+    html += `<h3>🌟 Bright Spots — What's Working Well</h3>
+    <p><strong>What you need to know:</strong> These are performing better than average. Consider giving them more allocation.</p><ul>`;
+    for (const d of topGood) {
+      const dimLabel = getDimensionLabel(d.dimension);
+      const liftPct = Math.abs(d.lift * 100).toFixed(0);
+      html += `<li><strong>${dimLabel}: ${escapeHtml(d.value)}</strong> — <span class="metric-good">${liftPct}% below baseline</span> (${d.total} items)</li>`;
+    }
+    html += '</ul>';
+  }
+
+  if (stylistOutliers.length > 0) {
+    html += `<h3>👤 Stylist Variance</h3>
+    <p><strong>What you need to know:</strong> These stylists have significantly higher hate-it rates than average.
+    This could mean they need coaching, or they might be assigned harder-to-style customers. Worth investigating.</p><ul>`;
+    for (const s of stylistOutliers) {
+      const liftPct = (s.lift * 100).toFixed(0);
+      html += `<li><strong>${escapeHtml(s.value)}</strong> — Hate It Rate: <span class="metric-highlight">${(s.hateRate * 100).toFixed(1)}%</span> (+${liftPct}% vs avg, ${s.total} items)</li>`;
+    }
+    html += '</ul>';
+  }
+
+  // Early warning
+  if (report.earlyWarning && report.earlyWarning.length > 0) {
+    const alerts = report.earlyWarning.filter(c => c.isEarlyWarning);
+    if (alerts.length > 0) {
+      html += `<h3>🚨 Early Warning Flags</h3>
+      <p><strong>What you need to know:</strong> These are recent shipments where early feedback suggests problems.
+      Not all ratings are in yet, so these could change — but they're worth watching closely.</p><ul>`;
+      for (const a of alerts) {
+        html += `<li><strong>${formatWeekLabel(a.weekOf)}</strong>: ${a.shipped} items shipped, only ${(a.completionRate * 100).toFixed(0)}% rated so far, running at <span class="metric-highlight">${(a.hateRate * 100).toFixed(1)}% hate rate</span></li>`;
+      }
+      html += '</ul>';
+    }
+  }
+
+  html += `<h3>📋 Recommended Next Steps</h3>
+  <p><strong>What you need to know:</strong> Based on the data above, here are concrete actions we can take.</p><ol>`;
+
+  // Generate contextual actions
+  if (topBad.length > 0) {
+    const brandIssues = topBad.filter(d => d.dimension === 'product_brand');
+    const stylistIssues = topBad.filter(d => d.dimension === 'Stylist');
+    const catIssues = topBad.filter(d => d.dimension === 'product_category');
+
+    if (brandIssues.length > 0) {
+      html += `<li><strong>Merch Review:</strong> ${brandIssues.map(b => escapeHtml(b.value)).join(', ')} — flag for allocation reduction or replacement</li>`;
+    }
+    if (stylistIssues.length > 0) {
+      html += `<li><strong>Stylist QA:</strong> Review recent picks from ${stylistIssues.map(s => escapeHtml(s.value)).join(', ')}</li>`;
+    }
+    if (catIssues.length > 0) {
+      html += `<li><strong>Category Mix:</strong> Review ${catIssues.map(c => escapeHtml(c.value)).join(', ')} category mix and sourcing quality</li>`;
+    }
+  }
+  html += `<li><strong>Monitor:</strong> Re-run this report in 7 days to track improvement</li>`;
+  html += '</ol>';
+
+  html += `<div class="report-timestamp">Generated by Hate It Rate Command Center | ${new Date().toISOString()}</div>`;
+  html += '</div>';
+  return html;
+}
+
+function getRecommendedAction(dimension, value, lift) {
+  const actions = {
+    'product_brand': `Flag ${value} for merch review — consider reducing allocation or investigating quality issues`,
+    'product_category': `Review ${value} category mix — check if specific subcategories or brands are driving the issue`,
+    'product_subcategory': `Investigate ${value} quality and fit — may need to adjust sourcing`,
+    'Stylist': `QA recent picks from ${value} — coaching or workload adjustment may be needed`,
+    'plan': `Review curation strategy for ${value} tier — expectations may not match delivery`,
+    'customerType': value === 'New Customer' ? `Review first-box curation — new customers are churning at high rates` : `Investigate recurring customer fatigue — review refresh strategy`,
+    'BoxNumber': lift > 0.3 ? `Critical: Box ${value} retention risk — review onboarding curation` : `Monitor Box ${value} experience`,
+    'product_sourcing': `Investigate ${value} supplier quality — may need new sourcing partners`,
+    'ShipAddrState': `Check regional trends for ${value} — seasonal or demographic mismatch possible`,
+    'product_color_style': `Review ${value} selections — may not match customer preferences`,
+    'product_seasonality': `Check ${value} seasonal relevance — may be out of season`,
+    'DayStyle': `Review curation for ${value} style preference — may need better matching`,
+    'EveningStyle': `Check evening style alignment for ${value} customers`,
+    'BottomFit': `Review fit recommendations for ${value} — sizing guidance may need updating`,
+    'TopSize': `Check size ${value} availability and fit consistency across brands`,
+    'WaistSize': `Review waist ${value} fit — check if specific brands run differently at this size`,
+    'Value': `Customers rating value as "${value}" — ${lift > 0 ? 'review price-to-quality ratio' : 'keep doing what works'}`,
+    'Presentation': `Presentation rated "${value}" — ${lift > 0 ? 'review packaging and unboxing experience' : 'maintain current standards'}`,
+    'ShopAt': `${value} shoppers have different expectations — review brand mix for this segment`
+  };
+  return actions[dimension] || 'Investigate further';
+}
+
+// --- Chat ---
+// Conversation history for multi-turn context (cleared on page reload)
+let chatHistory = [];
+
+function setupChat() {
+  const input = document.getElementById('chatInput');
+  const sendBtn = document.getElementById('chatSend');
+
+  sendBtn.addEventListener('click', () => sendChat());
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendChat();
+  });
+
+  document.querySelectorAll('.suggestion-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      input.value = btn.dataset.q;
+      sendChat();
+    });
+  });
+}
+
+// Small snapshot of current dashboard state to send with each message
+function getChatContext() {
+  return {
+    activeDimension: state.dimension || 'overall',
+    ratingType: state.ratingType || 'item',
+    dateRangeDays: state.dateDays || 30
+  };
+}
+
+async function sendChat() {
+  const input = document.getElementById('chatInput');
+  const message = input.value.trim();
+  if (!message) return;
+
+  const messages = document.getElementById('chatMessages');
+
+  // Add user message bubble
+  messages.innerHTML += `<div class="chat-message chat-message--user">
+    <div class="chat-avatar">👤</div>
+    <div class="chat-bubble">${escapeHtml(message)}</div>
+  </div>`;
+
+  input.value = '';
+
+  // Loading indicator
+  const loadingId = 'loading-' + Date.now();
+  messages.innerHTML += `<div class="chat-message chat-message--bot" id="${loadingId}">
+    <div class="chat-avatar">🤖</div>
+    <div class="chat-bubble"><span class="loading-spinner"></span> Computing from data archives...</div>
+  </div>`;
+
+  messages.scrollTop = messages.scrollHeight;
+
+  try {
+    const res = await fetch(`${API_BASE}/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        history: chatHistory.slice(-10),  // last 10 turns
+        context: getChatContext()
+      })
+    });
+    const data = await res.json();
+
+    const loadingEl = document.getElementById(loadingId);
+    if (loadingEl) {
+      if (data.needsApiKey) {
+        loadingEl.querySelector('.chat-bubble').innerHTML =
+          `<span style="color:var(--text-muted);">${escapeHtml(data.reply)}</span>`;
+      } else {
+        loadingEl.querySelector('.chat-bubble').innerHTML = formatChatReply(data.reply);
+        // Append to history for multi-turn context
+        chatHistory.push({ role: 'user', content: message });
+        chatHistory.push({ role: 'assistant', content: data.reply });
+      }
+    }
+  } catch (err) {
+    const loadingEl = document.getElementById(loadingId);
+    if (loadingEl) {
+      loadingEl.querySelector('.chat-bubble').textContent = 'I sense a disturbance... connection failed. Please try again.';
+    }
+  }
+
+  messages.scrollTop = messages.scrollHeight;
+
+  // Hide suggestions after first message
+  const suggestions = document.getElementById('chatSuggestions');
+  if (suggestions) suggestions.style.display = 'none';
+}
+
+function formatChatReply(text) {
+  // Markdown-lite: bold, bullets, line breaks
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^[-•]\s+(.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>)/s, '<ul style="margin:6px 0 6px 16px;padding:0;">$1</ul>')
+    .replace(/\n/g, '<br>');
+}
+
+// ============================================================
+// BOX HEALTH — Overview Tab
+// ============================================================
+
+// Wire the sentiment / customer-type toggles above BH charts
+function setupBHToggles() {
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-bh-toggle]');
+    if (!btn) return;
+    const group = btn.dataset.bhToggle;
+    const val   = btn.dataset.val;
+    // Deactivate siblings in same toggle group
+    btn.closest('.toggle-group').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    if (!bhState.charts) return; // safety
+    if (group === 'style') {
+      bhState.styleSentiment = val;
+      if (bhState.lastData) renderBHStyleChart(bhState.lastData.styleAccuracy, val);
+    } else if (group === 'value') {
+      bhState.valueSentiment = val;
+      if (bhState.lastData) renderBHValueChart(bhState.lastData.valuePerception, val);
+    } else if (group === 'dist') {
+      bhState.distCustomerType = val;
+      if (bhState.lastData) renderBHDistChart(bhState.lastData.boxTrend, val);
+    }
+  });
+
+  // Box Health date range buttons
+  document.querySelectorAll('.bh-range-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.bh-range-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const customPanel = document.getElementById('bhCustomRange');
+      if (btn.dataset.days === 'custom') {
+        // Show date pickers, don't re-render until both dates chosen
+        bhState.bhDateDays = -1;
+        if (customPanel) { customPanel.style.display = 'flex'; customPanel.classList.remove('hidden'); }
+      } else {
+        bhState.bhDateDays = parseInt(btn.dataset.days) || 0;
+        bhState.bhCustomStart = null;
+        bhState.bhCustomEnd   = null;
+        if (customPanel) { customPanel.style.display = 'none'; customPanel.classList.add('hidden'); }
+        if (bhState.lastData) { renderBoxHealthAll(bhState.lastData); loadCustomerProfiles(bhState.lastData); }
+      }
+    });
+  });
+
+  // Custom date inputs for Box Health
+  document.getElementById('bhCustomStart')?.addEventListener('change', (e) => {
+    bhState.bhCustomStart = e.target.value || null;
+    if (bhState.bhCustomStart && bhState.bhCustomEnd && bhState.lastData) { renderBoxHealthAll(bhState.lastData); loadCustomerProfiles(bhState.lastData); }
+  });
+  document.getElementById('bhCustomEnd')?.addEventListener('change', (e) => {
+    bhState.bhCustomEnd = e.target.value || null;
+    if (bhState.bhCustomStart && bhState.bhCustomEnd && bhState.lastData) { renderBoxHealthAll(bhState.lastData); loadCustomerProfiles(bhState.lastData); }
+  });
+
+  // Box Health dimension select
+  const bhDimSel = document.getElementById('bhDimensionSelect');
+  if (bhDimSel) {
+    bhDimSel.addEventListener('change', () => {
+      bhState.driverDimension = bhDimSel.value;
+      renderBHDriverTable(bhState.lastDrivers, bhState.driverDimension);
+    });
+  }
+}
+
+// Compute the start/end date window for Box Health charts/cards
+function getBHDateWindow(boxTrend) {
+  // Custom range: use user-picked dates directly
+  if (bhState.bhDateDays === -1) {
+    return { start: bhState.bhCustomStart || null, end: bhState.bhCustomEnd || null };
+  }
+  // All Time
+  if (!bhState.bhDateDays) return { start: null, end: null };
+  // Preset: go back bhDateDays from the most recent data week
+  const weeks = [...new Set(boxTrend.map(r => r.week_start))].sort();
+  if (!weeks.length) return { start: null, end: null };
+  const end   = weeks[weeks.length - 1];
+  const start = new Date(new Date(end + 'T00:00:00').getTime() - bhState.bhDateDays * 86400000)
+    .toISOString().split('T')[0];
+  return { start, end };
+}
+
+// Filter any boxHealth dataset (boxTrend, styleAccuracy, etc.) by week_start range
+function filterBHByDate(rows, start, end) {
+  if (!start && !end) return rows;
+  return rows.filter(r => (!start || r.week_start >= start) && (!end || r.week_start <= end));
+}
+
+// Compute combined (new+rec) hate/love rates for a reference window — returns {hate_rate, love_rate, total} or null
+function bhComputeRef(boxTrend, start, end) {
+  let hate = 0, love = 0, total = 0;
+  for (const r of boxTrend) {
+    if (start && r.week_start < start) continue;
+    if (end   && r.week_start > end)   continue;
+    hate  += r.hate  || 0;
+    love  += r.love  || 0;
+    total += r.total || 0;
+  }
+  if (total < 30) return null;
+  return { hate_rate: hate / total, love_rate: love / total, total };
+}
+
+// Compute per-customer-type reference rates
+function bhComputeRefByCT(boxTrend, start, end, ct) {
+  let hate = 0, love = 0, total = 0;
+  for (const r of boxTrend) {
+    if (start && r.week_start < start) continue;
+    if (end   && r.week_start > end)   continue;
+    if (r.customer_type !== ct) continue;
+    hate  += r.hate  || 0;
+    love  += r.love  || 0;
+    total += r.total || 0;
+  }
+  if (total < 30) return null;
+  return { hate_rate: hate / total, love_rate: love / total, total };
+}
+
+// Format a delta badge for Box Health cards
+function formatBHDelta(curRate, refRate, label, invertColor = false) {
+  if (refRate == null) return '';
+  const pp = (curRate - refRate) * 100;
+  if (Math.abs(pp) < 0.05) return '';
+  const goingUp = pp > 0;
+  const isBad   = invertColor ? !goingUp : goingUp;
+  const cls     = isBad ? 'delta--up' : 'delta--down';
+  const arrow   = goingUp ? '▲' : '▼';
+  const sign    = goingUp ? '+' : '';
+  return `<span class="delta-badge ${cls}">${arrow} ${sign}${pp.toFixed(1)}pp <span class="delta-label">${label}</span></span>`;
+}
+
+// Orchestrate all Box Health renders.
+// Date range selector affects ONLY the summary cards — charts always show full history.
+function renderBoxHealthAll(data) {
+  const { start, end } = getBHDateWindow(data.boxTrend);
+  // Cards: scoped to selected date window
+  renderBHCards(data.boxTrend, start, end);
+  // Charts: always full history (Jan 2025 → present)
+  renderBHTrendChart(data.boxTrend);
+  renderBHStyleChart(data.styleAccuracy,   bhState.styleSentiment);
+  renderBHValueChart(data.valuePerception, bhState.valueSentiment);
+  renderBHFitChart(data.fitSignal);
+  renderBHDistChart(data.boxTrend, bhState.distCustomerType);
+}
+
+// Main loader — fetches /api/box-health and renders everything
+async function loadBoxHealth() {
+  try {
+    const res = await fetch(`${API_BASE}/box-health');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    bhState.lastData = data;
+    bhState.lastDrivers = data.boxDrivers || {};
+    renderBoxHealthAll(data);
+    renderBHDriverTable(bhState.lastDrivers, bhState.driverDimension);
+    loadCustomerProfiles(data);
+  } catch (e) {
+    console.error('Box Health load failed:', e.message);
+  }
+}
+
+// Aggregate boxTrend rows into period stats for a given date window
+function computeBHPeriodStats(boxTrend, start, end) {
+  const s = { new: {hate:0,love:0,neutral:0,total:0}, recurring: {hate:0,love:0,neutral:0,total:0} };
+  for (const r of boxTrend) {
+    if (start && r.week_start < start) continue;
+    if (end   && r.week_start > end)   continue;
+    const ct = r.customer_type === 'new' ? 'new' : 'recurring';
+    s[ct].hate    += r.hate    || 0;
+    s[ct].love    += r.love    || 0;
+    s[ct].neutral += r.neutral || 0;
+    s[ct].total   += r.total   || 0;
+  }
+  for (const ct of ['new','recurring']) {
+    const c = s[ct];
+    c.hate_rate = c.total > 0 ? c.hate / c.total : 0;
+    c.love_rate = c.total > 0 ? c.love / c.total : 0;
+  }
+  return s;
+}
+
+// --- Summary Cards ---
+// boxTrend = FULL unfiltered dataset (for rolling refs)
+// start/end = the currently selected window
+function renderBHCards(boxTrend, start, end) {
+  const cur = computeBHPeriodStats(boxTrend, start, end);
+
+  // Reference windows for delta badges (computed from full dataset)
+  // Prior period: same span length immediately before start
+  let priorRefNew = null, priorRefRec = null;
+  let avg30dRefNew = null, avg30dRefRec = null;
+  let yearAgoRefNew = null, yearAgoRefRec = null;
+
+  if (start) {
+    const spanMs   = end
+      ? new Date(end + 'T00:00:00') - new Date(start + 'T00:00:00')
+      : (bhState.bhDateDays > 0 ? bhState.bhDateDays : 91) * 86400000;
+    const priorEndMs   = new Date(start + 'T00:00:00').getTime() - 86400000;
+    const priorStartMs = priorEndMs - spanMs;
+    const priorEnd   = new Date(priorEndMs).toISOString().split('T')[0];
+    const priorStart = new Date(priorStartMs).toISOString().split('T')[0];
+    priorRefNew = bhComputeRefByCT(boxTrend, priorStart, priorEnd, 'new');
+    priorRefRec = bhComputeRefByCT(boxTrend, priorStart, priorEnd, 'recurring');
+
+    // 30d rolling avg (prior 30 days before current window)
+    const m30End   = priorEnd;
+    const m30Start = new Date(new Date(start + 'T00:00:00').getTime() - 30 * 86400000).toISOString().split('T')[0];
+    avg30dRefNew = bhComputeRefByCT(boxTrend, m30Start, m30End, 'new');
+    avg30dRefRec = bhComputeRefByCT(boxTrend, m30Start, m30End, 'recurring');
+
+    // Year-ago same window
+    const yaStart = new Date(new Date(start + 'T00:00:00').getTime() - 365 * 86400000).toISOString().split('T')[0];
+    const yaEnd   = end ? new Date(new Date(end + 'T00:00:00').getTime() - 365 * 86400000).toISOString().split('T')[0] : priorEnd;
+    yearAgoRefNew = bhComputeRefByCT(boxTrend, yaStart, yaEnd, 'new');
+    yearAgoRefRec = bhComputeRefByCT(boxTrend, yaStart, yaEnd, 'recurring');
+  }
+
+  function setVal(id, rate) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = (rate * 100).toFixed(1) + '%';
+  }
+  function setDeltas(id, curRate, priorRef, avg30Ref, yearAgoRef, field, invertColor) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = [
+      priorRef   ? formatBHDelta(curRate, priorRef[field],   'vs prior',   invertColor) : '',
+      avg30Ref   ? formatBHDelta(curRate, avg30Ref[field],   '30d avg',    invertColor) : '',
+      yearAgoRef ? formatBHDelta(curRate, yearAgoRef[field], 'year ago',   invertColor) : ''
+    ].filter(Boolean).join('');
+  }
+
+  setVal('bh-hate-new', cur.new.hate_rate);
+  setVal('bh-hate-rec', cur.recurring.hate_rate);
+  setDeltas('bh-hate-new-delta', cur.new.hate_rate, priorRefNew, avg30dRefNew, yearAgoRefNew, 'hate_rate', false);
+  setDeltas('bh-hate-rec-delta', cur.recurring.hate_rate, priorRefRec, avg30dRefRec, yearAgoRefRec, 'hate_rate', false);
+
+  setVal('bh-love-new', cur.new.love_rate);
+  setVal('bh-love-rec', cur.recurring.love_rate);
+  setDeltas('bh-love-new-delta', cur.new.love_rate, priorRefNew, avg30dRefNew, yearAgoRefNew, 'love_rate', true);
+  setDeltas('bh-love-rec-delta', cur.recurring.love_rate, priorRefRec, avg30dRefRec, yearAgoRefRec, 'love_rate', true);
+
+  const totalNew = cur.new.total, totalRec = cur.recurring.total;
+  document.getElementById('bh-total').textContent = (totalNew + totalRec).toLocaleString();
+  document.getElementById('bh-total-sub').textContent =
+    `${totalNew.toLocaleString()} new | ${totalRec.toLocaleString()} recurring`;
+
+  // Threat level based on combined hate rate
+  const combined = (cur.new.total + cur.recurring.total) > 0
+    ? (cur.new.hate + cur.recurring.hate) / (cur.new.total + cur.recurring.total) : 0;
+  const [level, desc, cls] =
+    combined >= 0.20 ? ['CRITICAL', 'The Dark Side dominates',   'threat--critical'] :
+    combined >= 0.15 ? ['HIGH',     'Dark Side rising',          'threat--high']     :
+    combined >= 0.10 ? ['ELEVATED', 'Disturbance in the Force',  'threat--moderate'] :
+                       ['ALL CLEAR','The Force is strong',       'threat--low'];
+  document.getElementById('bh-threat').textContent = level;
+  document.getElementById('bh-threat').className = `card__value ${cls}`;
+  document.getElementById('bh-threat-desc').textContent = desc;
+  const rateEl = document.getElementById('bh-threat-rate');
+  if (rateEl) rateEl.textContent = `Combined hate rate: ${(combined * 100).toFixed(1)}%`;
+}
+
+// Helper: collect sorted unique weeks and build a keyed lookup from boxTrend or similar
+function bhWeekLookup(rows, keyFn) {
+  const lookup = {};
+  for (const r of rows) {
+    const wk = r.week_start;
+    if (!lookup[wk]) lookup[wk] = {};
+    keyFn(lookup[wk], r);
+  }
+  return lookup;
+}
+
+// Shared Chart.js line config for BH line charts
+function bhLineDataset(label, data, color, dashed) {
+  return {
+    type: 'line', label, data,
+    borderColor: color,
+    borderWidth: dashed ? 1.5 : 2,
+    borderDash: dashed ? [5, 4] : [],
+    pointRadius: 2, pointHoverRadius: 5,
+    fill: false, tension: 0.3, spanGaps: true
+  };
+}
+
+const BH_CHART_DEFAULTS = {
+  responsive: true, maintainAspectRatio: true,
+  interaction: { mode: 'index', intersect: false },
+  plugins: {
+    legend: {
+      display: true, position: 'top', align: 'end',
+      labels: { color: '#6a88b0', font: { size: 10 }, boxWidth: 20, padding: 10, usePointStyle: true }
+    }
+  },
+  scales: {
+    y: { beginAtZero: true, min: 0, max: 100, ticks: { callback: v => v + '%', color: '#6a88b0', font: { size: 11 } }, grid: { color: 'rgba(0,180,255,0.06)' } },
+    x: { ticks: { color: '#6a88b0', font: { size: 10 }, maxRotation: 45, maxTicksLimit: 18 }, grid: { display: false } }
+  }
+};
+
+// --- Chart 1: Box Hate & Love Rate Trend ---
+function renderBHTrendChart(boxTrend) {
+  const ctx = document.getElementById('bhTrendChart').getContext('2d');
+  if (bhState.charts.trend) bhState.charts.trend.destroy();
+
+  const weeksSet = new Set(boxTrend.map(r => r.week_start));
+  const weeks    = [...weeksSet].sort();
+  const lookup   = {};
+  for (const r of boxTrend) {
+    if (!lookup[r.week_start]) lookup[r.week_start] = {};
+    lookup[r.week_start][r.customer_type] = r;
+  }
+  const labels = weeks.map(w => formatWeekLabel(w));
+  const pct = (w, ct, field) => lookup[w]?.[ct] ? +(lookup[w][ct][field] * 100).toFixed(2) : null;
+
+  bhState.charts.trend = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets: [
+      bhLineDataset('New — Hate Rate',       weeks.map(w => pct(w,'new','hate_rate')),       'rgba(255,45,45,0.9)',  false),
+      bhLineDataset('Recurring — Hate Rate', weeks.map(w => pct(w,'recurring','hate_rate')), 'rgba(255,45,45,0.55)', true),
+      bhLineDataset('New — Love Rate',       weeks.map(w => pct(w,'new','love_rate')),       'rgba(0,230,118,0.9)',  false),
+      bhLineDataset('Recurring — Love Rate', weeks.map(w => pct(w,'recurring','love_rate')), 'rgba(0,230,118,0.55)', true),
+    ]},
+    options: {
+      ...BH_CHART_DEFAULTS,
+      plugins: { ...BH_CHART_DEFAULTS.plugins, tooltip: { callbacks: {
+        title: items => items.length ? formatWeekLabel(weeks[items[0].dataIndex]) : '',
+        afterBody: items => {
+          const i = items[0]?.dataIndex;
+          if (i == null) return [];
+          const n = lookup[weeks[i]]?.new, r = lookup[weeks[i]]?.recurring;
+          return [
+            n ? `New: ${n.hate} hate / ${n.love} love / ${n.total} total` : '',
+            r ? `Recurring: ${r.hate} hate / ${r.love} love / ${r.total} total` : ''
+          ].filter(Boolean);
+        }
+      }}}
+    }
+  });
+
+  const container = document.getElementById('bhTrendChart').closest('.chart-container');
+  removeExplainer(container);
+  container.insertAdjacentHTML('beforeend', `<div class="explainer">
+    <strong>What this shows:</strong> Box hate and love rates week over week, split by new vs recurring customers.
+    Solid lines = New customers. Dashed lines = Recurring customers.
+    <br><br>
+    <strong>Key insight:</strong> If new customer hate rate spikes but recurring stays flat, the problem is likely in onboarding or first-box curation — not product quality overall.
+    If both spike together, it's a broader product or value issue.
+  </div>`);
+}
+
+// Shared stacked bar builder for Style Accuracy and Value Perception
+function buildStackedBarChart(canvasId, rows, weeks, lookup, datasetDefs, chartRef) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  if (bhState.charts[chartRef]) bhState.charts[chartRef].destroy();
+
+  const labels = weeks.map(w => formatWeekLabel(w));
+
+  // Combine new + recurring into a single weighted-average value per week
+  const getDataCombined = (field) => weeks.map(w => {
+    const nr = lookup[w]?.['new'];
+    const rr = lookup[w]?.['recurring'];
+    if (!nr && !rr) return null;
+    if (!nr) return +(rr[field] * 100).toFixed(1);
+    if (!rr) return +(nr[field] * 100).toFixed(1);
+    const totalN = nr.total_boxes || 0;
+    const totalR = rr.total_boxes || 0;
+    const total  = totalN + totalR;
+    if (total === 0) return null;
+    return +((nr[field] * totalN + rr[field] * totalR) / total * 100).toFixed(1);
+  });
+
+  const datasets = datasetDefs.map(({ label, field, newColor }) => ({
+    label,
+    stack: 'combined',
+    data: getDataCombined(field),
+    backgroundColor: newColor,
+    borderWidth: 0
+  }));
+
+  bhState.charts[chartRef] = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      ...BH_CHART_DEFAULTS,
+      scales: {
+        x: { stacked: true, ticks: { color: '#6a88b0', font: { size: 10 }, maxRotation: 45, maxTicksLimit: 18 }, grid: { display: false } },
+        y: { stacked: true, beginAtZero: true, max: 100, ticks: { callback: v => v + '%', color: '#6a88b0', font: { size: 11 } }, grid: { color: 'rgba(0,180,255,0.06)' } }
+      },
+      plugins: { ...BH_CHART_DEFAULTS.plugins, tooltip: { callbacks: {
+        title: items => items.length ? formatWeekLabel(weeks[items[0].dataIndex]) : '',
+        label: ctx => ctx.parsed.y != null ? `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%` : null
+      }}}
+    }
+  });
+}
+
+// --- Chart 2: Style Accuracy ---
+function renderBHStyleChart(styleAccuracy, sentiment) {
+  const rows = styleAccuracy.filter(r => r.box_sentiment === sentiment);
+  const weeksSet = new Set(rows.map(r => r.week_start));
+  const weeks = [...weeksSet].sort();
+  const lookup = {};
+  for (const r of rows) {
+    if (!lookup[r.week_start]) lookup[r.week_start] = {};
+    lookup[r.week_start][r.customer_type] = r;
+  }
+
+  buildStackedBarChart('bhStyleChart', rows, weeks, lookup, [
+    { label: 'Love It',   field: 'love_it_pct',   newColor: 'rgba(0,230,118,0.85)',   recColor: 'rgba(0,230,118,0.45)'   },
+    { label: 'Mostly Me', field: 'mostly_me_pct', newColor: 'rgba(255,179,0,0.85)',   recColor: 'rgba(255,179,0,0.45)'   },
+    { label: 'Not Me',    field: 'not_me_pct',    newColor: 'rgba(255,45,45,0.85)',   recColor: 'rgba(255,45,45,0.45)'   },
+    { label: 'No Answer', field: 'no_answer_pct', newColor: 'rgba(100,120,150,0.5)',  recColor: 'rgba(100,120,150,0.25)' },
+  ], 'style');
+
+  const container = document.getElementById('bhStyleChart').closest('.chart-container');
+  removeExplainer(container);
+  container.insertAdjacentHTML('beforeend', `<div class="explainer">
+    <strong>What this shows:</strong> Whether customers felt the box matched their personal style.
+    Each bar stacks to 100% — new and recurring customers are combined using a weighted average.
+    <br><br>
+    <strong>Key insight:</strong> A high "Not Me" rate in hate boxes means a <em>targeting problem</em> — the wrong items are being picked — not a product quality issue.
+    Focus on stylist accuracy and customer style profile matching.
+  </div>`);
+}
+
+// --- Chart 3: Value Perception ---
+function renderBHValueChart(valuePerception, sentiment) {
+  const rows = valuePerception.filter(r => r.box_sentiment === sentiment);
+  const weeksSet = new Set(rows.map(r => r.week_start));
+  const weeks = [...weeksSet].sort();
+  const lookup = {};
+  for (const r of rows) {
+    if (!lookup[r.week_start]) lookup[r.week_start] = {};
+    lookup[r.week_start][r.customer_type] = r;
+  }
+
+  buildStackedBarChart('bhValueChart', rows, weeks, lookup, [
+    { label: 'Excellent', field: 'excellent_pct', newColor: 'rgba(0,230,118,0.85)',  recColor: 'rgba(0,230,118,0.45)'  },
+    { label: 'Good',      field: 'good_pct',      newColor: 'rgba(255,179,0,0.85)',  recColor: 'rgba(255,179,0,0.45)'  },
+    { label: 'Poor',      field: 'poor_pct',      newColor: 'rgba(255,45,45,0.85)',  recColor: 'rgba(255,45,45,0.45)'  },
+    { label: 'No Answer', field: 'no_answer_pct', newColor: 'rgba(100,120,150,0.5)', recColor: 'rgba(100,120,150,0.25)'},
+  ], 'value');
+
+  const container = document.getElementById('bhValueChart').closest('.chart-container');
+  removeExplainer(container);
+  container.insertAdjacentHTML('beforeend', `<div class="explainer">
+    <strong>What this shows:</strong> Whether customers felt the box was worth the price.
+    Each bar stacks to 100% — new and recurring customers are combined using a weighted average.
+    <br><br>
+    <strong>Key insight:</strong> A rising "Poor" rate in hate boxes signals a value problem — items may be priced too high relative to perceived quality, or the box mix is not hitting the mark.
+  </div>`);
+}
+
+// --- Chart 4: Fit Signal ---
+function renderBHFitChart(fitSignal) {
+  const ctx = document.getElementById('bhFitChart').getContext('2d');
+  if (bhState.charts.fit) bhState.charts.fit.destroy();
+
+  const weeksSet = new Set(fitSignal.map(r => r.week_start));
+  const weeks    = [...weeksSet].sort();
+  const lookup   = {};
+  for (const r of fitSignal) {
+    if (!lookup[r.week_start]) lookup[r.week_start] = {};
+    lookup[r.week_start][`${r.customer_type}_${r.box_sentiment}`] = r;
+  }
+  const pct = (w, key) => lookup[w]?.[key] ? +(lookup[w][key].bad_fit_box_pct * 100).toFixed(2) : null;
+
+  bhState.charts.fit = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: weeks.map(w => formatWeekLabel(w)),
+      datasets: [
+        bhLineDataset('New — Hate',       weeks.map(w => pct(w,'new_hate')),       'rgba(255,45,45,0.9)',  false),
+        bhLineDataset('Recurring — Hate', weeks.map(w => pct(w,'recurring_hate')), 'rgba(255,45,45,0.55)', true),
+        bhLineDataset('New — Love',       weeks.map(w => pct(w,'new_love')),       'rgba(0,230,118,0.9)',  false),
+        bhLineDataset('Recurring — Love', weeks.map(w => pct(w,'recurring_love')), 'rgba(0,230,118,0.55)', true),
+      ]
+    },
+    options: {
+      ...BH_CHART_DEFAULTS,
+      plugins: { ...BH_CHART_DEFAULTS.plugins, tooltip: { callbacks: {
+        title: items => items.length ? formatWeekLabel(weeks[items[0].dataIndex]) : '',
+        label: ctx => ctx.parsed.y != null ? `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}% of boxes had a bad fit item` : null
+      }}}
+    }
+  });
+
+  const container = document.getElementById('bhFitChart').closest('.chart-container');
+  removeExplainer(container);
+  container.insertAdjacentHTML('beforeend', `<div class="explainer">
+    <strong>What this shows:</strong> The % of boxes with at least one item rated Loose or Tight, split by hate/love and new/recurring.
+    <br><br>
+    <strong>Key insight:</strong> Hate boxes consistently show higher bad fit rates than love boxes.
+    Watch for the gap between hate and love lines widening — that signals fit is becoming a bigger driver of dissatisfaction.
+    If the gap is narrow, fit may not be the root cause of hate ratings.
+  </div>`);
+}
+
+// --- Chart 5: Rating Distribution (100% stacked bar) ---
+function renderBHDistChart(boxTrend, customerType) {
+  const ctx = document.getElementById('bhDistChart').getContext('2d');
+  if (bhState.charts.dist) bhState.charts.dist.destroy();
+
+  // Combine new + recurring into one weighted bar per week
+  const weeksSet = new Set(boxTrend.map(r => r.week_start));
+  const weeks    = [...weeksSet].sort();
+  const lookup   = {};
+  for (const r of boxTrend) {
+    if (!lookup[r.week_start]) lookup[r.week_start] = { hate: 0, neutral: 0, love: 0, total: 0 };
+    lookup[r.week_start].hate    += r.hate    || 0;
+    lookup[r.week_start].neutral += r.neutral || 0;
+    lookup[r.week_start].love    += r.love    || 0;
+    lookup[r.week_start].total   += r.total   || 0;
+  }
+
+  const pct = (w, field) => {
+    const row = lookup[w];
+    return (row && row.total > 0) ? +(row[field] / row.total * 100).toFixed(1) : null;
+  };
+
+  bhState.charts.dist = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: weeks.map(w => formatWeekLabel(w)),
+      datasets: [
+        { label: 'Hate (1–2)', stack: 'dist', data: weeks.map(w => pct(w,'hate')),    backgroundColor: 'rgba(255,45,45,0.8)',    borderWidth: 0 },
+        { label: 'Neutral (3)', stack: 'dist', data: weeks.map(w => pct(w,'neutral')), backgroundColor: 'rgba(100,120,150,0.5)',  borderWidth: 0 },
+        { label: 'Love (4–5)', stack: 'dist', data: weeks.map(w => pct(w,'love')),    backgroundColor: 'rgba(0,230,118,0.75)',   borderWidth: 0 },
+      ]
+    },
+    options: {
+      ...BH_CHART_DEFAULTS,
+      scales: {
+        x: { stacked: true, ticks: { color: '#6a88b0', font: { size: 10 }, maxRotation: 45, maxTicksLimit: 18 }, grid: { display: false } },
+        y: { stacked: true, beginAtZero: true, max: 100, ticks: { callback: v => v + '%', color: '#6a88b0', font: { size: 11 } }, grid: { color: 'rgba(0,180,255,0.06)' } }
+      },
+      plugins: { ...BH_CHART_DEFAULTS.plugins, tooltip: { callbacks: {
+        title: items => items.length ? formatWeekLabel(weeks[items[0].dataIndex]) : '',
+        label: ctx => ctx.parsed.y != null ? `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%` : null,
+        afterBody: items => {
+          const w = weeks[items[0]?.dataIndex];
+          return w && lookup[w] ? [`${lookup[w].total.toLocaleString()} total boxes rated`] : [];
+        }
+      }}}
+    }
+  });
+
+  const container = document.getElementById('bhDistChart').closest('.chart-container');
+  removeExplainer(container);
+  container.insertAdjacentHTML('beforeend', `<div class="explainer">
+    <strong>What this shows:</strong> How box ratings break down each week — Hate (1–2), Neutral (3), and Love (4–5) stacked to 100%.
+    New and recurring customers are combined. Hover any bar to see exact percentages and total boxes rated.
+    <br><br>
+    <strong>Key insight:</strong> Watch for the red segment growing or the green segment shrinking week-over-week.
+    A healthy box program has a dominant green band with a thin, stable red sliver at the bottom.
+  </div>`);
+}
+
+// --- Box Health Driver Table ---
+function renderBHDriverTable(boxDrivers, dimension) {
+  const tbody = document.getElementById('bhDriverTableBody');
+  if (!tbody) return;
+
+  const rows = (boxDrivers || {})[dimension] || [];
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#6a88b0;padding:20px;">No data yet — drivers load on next cache refresh</td></tr>`;
+    return;
+  }
+
+  // Compute overall avg hate rate
+  const totalHate = rows.reduce((s,r) => s + r.hate, 0);
+  const totalAll  = rows.reduce((s,r) => s + r.total, 0);
+  const avgHate   = totalAll > 0 ? totalHate / totalAll : 0;
+
+  tbody.innerHTML = rows.slice(0, 25).map((r, i) => {
+    const hateClass = r.hate_rate > avgHate * 1.5 ? 'color:var(--dark-side)' :
+                      r.hate_rate < avgHate * 0.7 ? 'color:var(--light-side)' : '';
+    const liftStr = r.lift > 0
+      ? `<span style="color:var(--dark-side)">▲ ${(r.lift * 100).toFixed(0)}%</span>`
+      : `<span style="color:var(--light-side)">▼ ${Math.abs(r.lift * 100).toFixed(0)}%</span>`;
+    const val = dimension === 'package_num'
+      ? (r.dim_value === '1' ? '1st Box (New)' : `Box #${r.dim_value}`)
+      : escapeHtml(String(r.dim_value));
+    return `<tr>
+      <td>${i + 1}</td>
+      <td>${val}</td>
+      <td style="${hateClass};font-weight:600">${(r.hate_rate * 100).toFixed(1)}%</td>
+      <td>${(r.love_rate * 100).toFixed(1)}%</td>
+      <td>${r.total.toLocaleString()}</td>
+      <td>${liftStr}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ============================================================
+// BOX HEALTH — Customer Segment Performance
+// ============================================================
+
+async function loadCustomerProfiles(boxHealthData) {
+  // Build date range from current BH state
+  const { start, end } = getBHDateWindow(boxHealthData.boxTrend || []);
+  const params = new URLSearchParams();
+  if (start) params.set('start', start);
+  if (end)   params.set('end',   end);
+
+  try {
+    const res  = await fetch(`${API_BASE}/customer-profiles?${params}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const profileData = await res.json();
+    renderTenureCurve(boxHealthData.boxDrivers || {});
+    renderSegmentGapTable(boxHealthData.boxDrivers || {}, profileData);
+  } catch (e) {
+    console.error('Customer profiles load failed:', e.message);
+  }
+}
+
+function renderTenureCurve(boxDrivers) {
+  const canvas = document.getElementById('bhTenureChart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (bhState.charts.tenure) bhState.charts.tenure.destroy();
+
+  const MIN_VOL = 30;
+  const raw = (boxDrivers['package_num'] || []).filter(r => r.total >= MIN_VOL);
+  if (!raw.length) {
+    canvas.parentElement.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:20px;text-align:center;">No box tenure data available.</div>';
+    return;
+  }
+
+  // Group 10+ together
+  const buckets = {};
+  for (const r of raw) {
+    const n   = parseInt(r.dim_value);
+    const key = n >= 10 ? '10+' : String(n);
+    if (!buckets[key]) buckets[key] = { hate: 0, total: 0 };
+    buckets[key].hate  += r.hate;
+    buckets[key].total += r.total;
+  }
+
+  // Sort: 1, 2, ... 9, 10+
+  const labels = Object.keys(buckets).sort((a, b) => {
+    if (a === '10+') return 1;
+    if (b === '10+') return -1;
+    return parseInt(a) - parseInt(b);
+  });
+
+  const rates    = labels.map(k => Math.round(buckets[k].hate / buckets[k].total * 1000) / 10);
+  const overall  = raw.reduce((s, r) => s + r.hate, 0) / Math.max(raw.reduce((s, r) => s + r.total, 0), 1);
+  const avgLine  = labels.map(() => Math.round(overall * 1000) / 10);
+
+  // Find inflection: first box number where rate drops BELOW overall average
+  const inflectionIdx = rates.findIndex(r => r < avgLine[0]);
+  const inflectionLabel = inflectionIdx >= 0 ? labels[inflectionIdx] : null;
+
+  bhState.charts.tenure = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Box Hate Rate',
+          data:  rates,
+          borderColor: '#ef4444',
+          backgroundColor: 'rgba(239,68,68,0.08)',
+          pointBackgroundColor: rates.map((r, i) =>
+            i === inflectionIdx ? '#22c55e' : r > avgLine[0] ? '#ef4444' : '#22c55e'
+          ),
+          pointRadius: 5,
+          tension: 0.3,
+          fill: true
+        },
+        {
+          label: 'Overall Avg',
+          data:  avgLine,
+          borderColor: 'rgba(255,255,255,0.25)',
+          borderDash: [5, 4],
+          pointRadius: 0,
+          tension: 0
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y}%`
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'Box Number', color: '#64748b', font: { size: 11 } },
+          ticks: { color: '#64748b' },
+          grid:  { color: 'rgba(255,255,255,0.05)' }
+        },
+        y: {
+          title: { display: true, text: 'Hate Rate %', color: '#64748b', font: { size: 11 } },
+          ticks: { color: '#64748b', callback: v => v + '%' },
+          grid:  { color: 'rgba(255,255,255,0.05)' },
+          min: 0
+        }
+      }
+    }
+  });
+
+  // Annotation below chart
+  if (inflectionLabel) {
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size:11px;color:var(--light-side);margin-top:6px;text-align:center;';
+    note.textContent = `✅ Hate rate drops below average starting at box ${inflectionLabel}`;
+    canvas.parentElement.appendChild(note);
+  }
+}
+
+function renderSegmentGapTable(boxDrivers, profileData) {
+  const tbody = document.getElementById('bhSegmentGapBody');
+  if (!tbody) return;
+
+  const MIN_VOL = 30;
+  const DIM_LABELS = {
+    package_num:   'Box Tenure',
+    DayStyle:      'Day Style',
+    EveningStyle:  'Evening Style',
+    BottomFit:     'Bottom Fit',
+    TopSize:       'Top Size',
+    ShipAddrState: 'State',
+    Stylist:       'Stylist',
+    plan:          'Plan'
+  };
+
+  const gaps = [];
+
+  // Process each boxDrivers dimension
+  for (const [dim, label] of Object.entries(DIM_LABELS)) {
+    let rows;
+    if (dim === 'plan') {
+      // From /api/customer-profiles
+      rows = (profileData.byPlan || [])
+        .filter(r => r.total >= MIN_VOL)
+        .map(r => ({ dim_value: r.value, hate_rate: r.hateRate, total: r.total }));
+    } else {
+      rows = (boxDrivers[dim] || []).filter(r => r.total >= MIN_VOL);
+    }
+
+    if (rows.length < 2) continue; // need at least 2 to compute a gap
+
+    const sorted = [...rows].sort((a, b) => a.hate_rate - b.hate_rate);
+    const best   = sorted[0];
+    const worst  = sorted[sorted.length - 1];
+    const gap    = worst.hate_rate - best.hate_rate;
+
+    // Format dim_value for package_num
+    const fmtVal = (dim, val) => {
+      if (dim === 'package_num') return val === '1' ? '1st Box' : `Box #${val}`;
+      return escapeHtml(String(val));
+    };
+
+    gaps.push({
+      label,
+      bestVal:  fmtVal(dim, best.dim_value),
+      bestRate: best.hate_rate,
+      worstVal: fmtVal(dim, worst.dim_value),
+      worstRate: worst.hate_rate,
+      gap
+    });
+  }
+
+  // Sort by gap descending
+  gaps.sort((a, b) => b.gap - a.gap);
+
+  if (!gaps.length) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">Not enough segment data for this date range.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = gaps.map(g => {
+    const gapPct   = (g.gap * 100).toFixed(1);
+    const gapColor = g.gap > 0.10 ? 'var(--dark-side)' : g.gap > 0.05 ? '#f59e0b' : 'var(--text-muted)';
+    const gapIcon  = g.gap > 0.10 ? '🔴' : g.gap > 0.05 ? '🟡' : '⚪';
+    return `<tr>
+      <td style="font-weight:600;">${g.label}</td>
+      <td style="color:var(--light-side);">${g.bestVal}</td>
+      <td style="color:var(--light-side);font-weight:600;">${(g.bestRate * 100).toFixed(1)}%</td>
+      <td style="color:var(--dark-side);">${g.worstVal}</td>
+      <td style="color:var(--dark-side);font-weight:600;">${(g.worstRate * 100).toFixed(1)}%</td>
+      <td style="color:${gapColor};font-weight:600;">${gapIcon} ${gapPct}%</td>
+    </tr>`;
+  }).join('');
+}
+
+// ============================================================
+// BOX HEALTH — Lag Analysis Tab
+// Data source: /api/lag-analysis (computed from in-memory master_orders)
+// Sections: Lag Curve · Ship×Rating Heatmap · Ship Week Table
+// ============================================================
+
+const lagState = {
+  selectedWeeks: [],
+  lagWindow:     14,
+  customerType:  'all',
+  chart:         null,
+  lastData:      null,
+  loaded:        false
+};
+
+// One color per ship week line (up to 4)
+const LAG_LINE_COLORS = [
+  { border: 'rgba(255,45,45,0.9)',   bg: 'rgba(255,45,45,0.07)'   },
+  { border: 'rgba(0,180,255,0.9)',   bg: 'rgba(0,180,255,0.07)'   },
+  { border: 'rgba(255,179,0,0.9)',   bg: 'rgba(255,179,0,0.07)'   },
+  { border: 'rgba(0,230,118,0.9)',   bg: 'rgba(0,230,118,0.07)'   },
+];
+
+// Wire all controls inside the lag sub-panel
+function setupLagControls() {
+  // Lag window preset buttons
+  document.querySelectorAll('.lag-window-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.lag-window-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      lagState.lagWindow = parseInt(btn.dataset.days);
+      if (lagState.loaded) loadLagAnalysis();
+    });
+  });
+
+  // Customer type filter buttons
+  document.querySelectorAll('.lag-ctype-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.lag-ctype-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      lagState.customerType = btn.dataset.ctype;
+      lagState.loaded = false; // force re-fetch so availableWeeks updates
+      loadLagAnalysis();
+    });
+  });
+
+  // Ship week multi-select
+  const sel = document.getElementById('lagWeekSelect');
+  if (sel) {
+    sel.addEventListener('change', () => {
+      // Enforce max 4 selections — keep first 4 chosen
+      const selected = [...sel.selectedOptions].map(o => o.value).slice(0, 4);
+      // Enforce the cap: deselect anything beyond 4
+      let count = 0;
+      for (const opt of sel.options) {
+        if (opt.selected) {
+          count++;
+          if (count > 4) opt.selected = false;
+        }
+      }
+      lagState.selectedWeeks = selected;
+      if (lagState.loaded) loadLagAnalysis();
+    });
+  }
+}
+
+// Main lag loader — fetches /api/lag-analysis and renders all three sections
+async function loadLagAnalysis() {
+  const params = new URLSearchParams({
+    lagWindow:    lagState.lagWindow,
+    customerType: lagState.customerType,
+  });
+  if (lagState.selectedWeeks.length > 0) {
+    params.set('weeks', lagState.selectedWeeks.join(','));
+  }
+  try {
+    const res = await fetch(`${API_BASE}/lag-analysis?${params}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    lagState.lastData = data;
+    lagState.loaded   = true;
+    lagState.selectedWeeks = data.selectedWeeks;
+    populateLagWeekSelector(data.availableWeeks, data.selectedWeeks);
+    renderLagCurve(data);
+    renderLagHeatmap(data);
+    renderLagTable(data);
+  } catch (e) {
+    console.error('Lag analysis load failed:', e.message);
+  }
+}
+
+// Populate the ship week <select multiple> — only rebuild if list changed
+function populateLagWeekSelector(availableWeeks, selectedWeeks) {
+  const sel = document.getElementById('lagWeekSelect');
+  if (!sel) return;
+  const needsRebuild = sel.options.length !== availableWeeks.length
+    || (sel.options[0] && sel.options[0].disabled);
+  if (needsRebuild) {
+    sel.innerHTML = availableWeeks.map(wk =>
+      `<option value="${wk}">${formatWeekLabel(wk)}</option>`
+    ).join('');
+  }
+  for (const opt of sel.options) {
+    opt.selected = selectedWeeks.includes(opt.value);
+  }
+}
+
+// ---- Section 1: Lag Curve (Chart.js line chart) ----
+function renderLagCurve(data) {
+  const canvas = document.getElementById('lagCurveChart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (lagState.chart) lagState.chart.destroy();
+
+  const { lagCurve, selectedWeeks, lagWindow, medianDaysToRate } = data;
+  const days = Array.from({ length: lagWindow }, (_, i) => i + 1);
+
+  // Keep raw bucket counts for richer tooltips
+  const rawBuckets = {};
+
+  const datasets = selectedWeeks.map((wk, idx) => {
+    const byDay = lagCurve[wk] || {};
+    rawBuckets[wk] = byDay;
+    const c = LAG_LINE_COLORS[idx] || LAG_LINE_COLORS[0];
+    return {
+      label: formatWeekLabel(wk),
+      _wk:   wk,
+      data:  days.map(d => {
+        const b = byDay[d];
+        if (!b || b.total < 30) return null; // low-vol → break line
+        return +(b.hate / b.total * 100).toFixed(1);
+      }),
+      borderColor:     c.border,
+      backgroundColor: c.bg,
+      borderWidth: 2,
+      pointRadius: 3,
+      pointHoverRadius: 5,
+      tension: 0.3,
+      spanGaps: false,
+      fill: false,
+    };
+  });
+
+  // Inline plugin: dashed vertical line at median days-to-rate
+  const medianPlugin = {
+    id: 'lagMedianLine',
+    afterDraw(chart) {
+      const med = medianDaysToRate;
+      if (!med || med < 1 || med > lagWindow) return;
+      const xAxis = chart.scales.x;
+      const tickIdx = med - 1;
+      if (tickIdx >= days.length) return;
+      const x  = xAxis.getPixelForTick(tickIdx);
+      const { top, bottom } = chart.chartArea;
+      const c  = chart.ctx;
+      c.save();
+      c.strokeStyle = 'rgba(255,179,0,0.65)';
+      c.lineWidth   = 1.5;
+      c.setLineDash([6, 4]);
+      c.beginPath();
+      c.moveTo(x, top);
+      c.lineTo(x, bottom);
+      c.stroke();
+      c.setLineDash([]);
+      c.fillStyle  = 'rgba(255,179,0,0.8)';
+      c.font       = '10px Inter, sans-serif';
+      c.fillText(`Median: Day ${med}`, x + 4, top + 14);
+      c.restore();
+    }
+  };
+
+  lagState.chart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: days.map(d => `Day ${d}`), datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: true, position: 'top', align: 'end',
+          labels: { color: '#6a88b0', font: { size: 10 }, boxWidth: 20, padding: 10, usePointStyle: true }
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const wk     = ctx.dataset._wk;
+              const bucket = rawBuckets[wk]?.[ctx.dataIndex + 1];
+              if (ctx.parsed.y == null) {
+                if (bucket && bucket.total > 0)
+                  return `${ctx.dataset.label}: low vol (${bucket.total} boxes)`;
+                return `${ctx.dataset.label}: no data`;
+              }
+              const n = bucket ? ` · ${bucket.total} boxes` : '';
+              return `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%${n}`;
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          min: 0,
+          ticks: { callback: v => v + '%', color: '#6a88b0', font: { size: 11 } },
+          grid:  { color: 'rgba(0,180,255,0.06)' },
+          title: { display: true, text: 'Box Hate Rate %', color: '#6a88b0', font: { size: 11 } }
+        },
+        x: {
+          ticks: { color: '#6a88b0', font: { size: 10 } },
+          grid:  { color: 'rgba(0,180,255,0.04)' },
+          title: { display: true, text: 'Days Since Ship Date', color: '#6a88b0', font: { size: 11 } }
+        }
+      }
+    },
+    plugins: [medianPlugin]
+  });
+
+  const container = canvas.closest('.chart-container');
+  removeExplainer(container);
+  container.insertAdjacentHTML('beforeend', `<div class="explainer">
+    <strong>What this shows:</strong> Each line shows how hate rates developed over time after boxes shipped that week.
+    If hate peaks at Day 14, you have roughly a 2-week feedback delay to factor into your analysis.
+    Compare multiple ship weeks to spot which batches performed differently.
+    <br><br>
+    <strong>Note:</strong> Points with fewer than 30 boxes are not plotted — the line breaks where volume is too low to trust.
+    The gold dashed line marks the median days-to-rate across all boxes (Day ${medianDaysToRate}).
+  </div>`);
+}
+
+// ---- Section 2: Ship Week × Rating Week Heatmap (HTML/CSS grid) ----
+function renderLagHeatmap(data) {
+  const container = document.getElementById('lagHeatmap');
+  if (!container) return;
+
+  const { heatmap, shipWeeks, ratingWeeks } = data;
+  if (!shipWeeks.length || !ratingWeeks.length) {
+    container.innerHTML = '<p style="color:var(--text-muted);padding:16px;">No heatmap data available for this selection.</p>';
+    return;
+  }
+
+  // Map hate rate (0–0.30) → dark-navy to dark-red gradient
+  function cellBg(rate) {
+    const t = Math.min(rate / 0.30, 1);
+    const r = Math.round(20  + t * (139 - 20));
+    const g = Math.round(35  + t * (0   - 35));
+    const b = Math.round(55  + t * (0   - 55));
+    const a = (0.25 + t * 0.75).toFixed(2);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  const cellW  = 72;
+  const labelW = 122;
+  const gap    = 2;
+  const cols   = ratingWeeks.length;
+
+  let html = `<div style="
+    display:grid;
+    grid-template-columns:${labelW}px ${Array(cols).fill(cellW + 'px').join(' ')};
+    gap:${gap}px;
+    min-width:${labelW + cols * (cellW + gap)}px;
+    font-size:11px;
+  ">`;
+
+  // Header row
+  html += `<div style="padding:6px 8px;color:var(--text-muted);font-size:10px;font-weight:600;line-height:1.3;">
+    Ship ↓ &nbsp;/&nbsp; Rating →</div>`;
+  for (const rw of ratingWeeks) {
+    html += `<div style="padding:4px 3px;color:var(--text-muted);text-align:center;font-size:10px;
+      line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+      title="${formatWeekLabel(rw)}">${formatWeekLabel(rw)}</div>`;
+  }
+
+  // Data rows — one per ship week
+  for (const sw of shipWeeks) {
+    html += `<div style="padding:6px 8px;color:var(--text-primary);font-size:11px;font-weight:500;
+      cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+      border-radius:3px;transition:background 0.15s;"
+      onclick="lagSelectWeek('${sw}')"
+      onmouseover="this.style.background='rgba(0,180,255,0.1)'"
+      onmouseout="this.style.background=''"
+      title="Click to add to lag curve">${formatWeekLabel(sw)}</div>`;
+
+    for (const rw of ratingWeeks) {
+      const cell = heatmap[sw]?.[rw];
+      if (!cell) {
+        html += `<div style="background:rgba(10,15,25,0.5);border-radius:3px;"></div>`;
+      } else if (cell.total < 30) {
+        html += `<div style="background:rgba(40,55,70,0.5);border-radius:3px;padding:5px 3px;
+          text-align:center;color:var(--text-muted);font-size:10px;" title="${cell.total} boxes">low vol</div>`;
+      } else {
+        const bg       = cellBg(cell.rate);
+        const ratePct  = (cell.rate * 100).toFixed(1);
+        const txtColor = cell.rate > 0.17 ? '#fff' : '#8899b3';
+        const fw       = cell.rate > 0.15 ? 600 : 400;
+        html += `<div style="background:${bg};border-radius:3px;padding:5px 3px;
+          text-align:center;color:${txtColor};font-weight:${fw};cursor:pointer;transition:filter 0.1s;"
+          onclick="lagSelectWeek('${sw}')"
+          onmouseover="this.style.filter='brightness(1.3)'"
+          onmouseout="this.style.filter=''"
+          title="${cell.total} boxes | ${ratePct}% hate">${ratePct}%</div>`;
+      }
+    }
+  }
+  html += '</div>';
+
+  // Colour-scale legend
+  html += `<div style="display:flex;align-items:center;gap:12px;margin-top:10px;
+    font-size:11px;color:var(--text-muted);flex-wrap:wrap;">
+    <span>Hate Rate:</span>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <div style="width:28px;height:13px;background:rgba(20,35,55,0.4);
+        border-radius:2px;border:1px solid rgba(106,136,176,0.2);"></div><span>0%</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <div style="width:28px;height:13px;background:rgba(80,18,28,0.75);border-radius:2px;"></div><span>15%</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <div style="width:28px;height:13px;background:rgba(139,0,0,0.95);border-radius:2px;"></div><span>30%+</span>
+    </div>
+    <span style="margin-left:4px;">⬛ = no data &nbsp;·&nbsp; gray = &lt;30 boxes &nbsp;·&nbsp; Click row or cell → adds to lag curve</span>
+  </div>`;
+
+  // Explainer
+  html += `<div class="explainer" style="margin-top:12px;">
+    <strong>What this shows:</strong> Each cell shows the hate rate for boxes shipped in that row's week, rated during that column's week.
+    The diagonal pattern shows the typical feedback lag — most ratings arrive 7–21 days after shipping.
+    Dark red cells off the diagonal indicate delayed or unusually high hate rate signals.
+    <br><br>
+    <strong>How to use it:</strong> Click any ship week label or cell to add that week to the Lag Curve above.
+  </div>`;
+
+  container.innerHTML = html;
+}
+
+// Called by heatmap cell / row onclick — adds a ship week to the curve
+function lagSelectWeek(weekStr) {
+  const sel = document.getElementById('lagWeekSelect');
+  if (!sel) return;
+  const opt = [...sel.options].find(o => o.value === weekStr);
+  if (!opt) return;
+  if (!opt.selected) {
+    const numSelected = [...sel.selectedOptions].length;
+    if (numSelected >= 4) {
+      // Deselect the earliest selected week to make room
+      const first = [...sel.selectedOptions][0];
+      if (first) first.selected = false;
+    }
+    opt.selected = true;
+  }
+  lagState.selectedWeeks = [...sel.selectedOptions].map(o => o.value);
+  loadLagAnalysis();
+}
+
+// ---- Section 3: Ship Week Breakdown Table ----
+function renderLagTable(data) {
+  const tbody = document.getElementById('lagTableBody');
+  if (!tbody) return;
+
+  const { table } = data;
+  if (!table.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px;">Select a ship week above to see breakdown</td></tr>';
+    return;
+  }
+
+  const sorted = [...table].sort((a, b) => b.hateRate - a.hateRate);
+  tbody.innerHTML = sorted.map(row => {
+    const lowVol    = row.total < 30;
+    const hateStyle = !lowVol && row.hateRate > 0.18 ? 'color:var(--dark-side)'  :
+                      !lowVol && row.hateRate < 0.12 ? 'color:var(--light-side)' : '';
+    const newPct = row.newHateRate       != null ? `${(row.newHateRate       * 100).toFixed(1)}%` : '—';
+    const recPct = row.recurringHateRate != null ? `${(row.recurringHateRate * 100).toFixed(1)}%` : '—';
+    const newN   = row.newTotal > 0 ? ` <span style="color:var(--text-muted);font-size:10px;">(${row.newTotal})</span>` : '';
+    const recN   = row.recTotal > 0 ? ` <span style="color:var(--text-muted);font-size:10px;">(${row.recTotal})</span>` : '';
+    const daysStr = row.avgDaysToRate != null ? `${row.avgDaysToRate}d` : '—';
+    return `<tr${lowVol ? ' class="low-vol-row"' : ''}>
+      <td><strong>${formatWeekLabel(row.shipWeek)}</strong></td>
+      <td>${lowVol ? '<span class="low-vol">low vol</span>' : row.total.toLocaleString()}</td>
+      <td style="${hateStyle};font-weight:600">${(row.hateRate * 100).toFixed(1)}%</td>
+      <td style="color:var(--light-side)">${(row.loveRate * 100).toFixed(1)}%</td>
+      <td>${daysStr}</td>
+      <td>${newPct}${newN}</td>
+      <td>${recPct}${recN}</td>
+    </tr>`;
+  }).join('');
+}
+
+// --- Utilities ---
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function escapeAttr(str) {
+  return str.replace(/'/g, "\\'").replace(/"/g, '\\"');
+}
+
+function removeExplainer(container) {
+  const existing = container.querySelector('.explainer');
+  if (existing) existing.remove();
+}
+
+// ============================================================
+// BRAND × CATEGORY HEATMAP
+// ============================================================
+
+async function loadBrandCategoryHeatmap() {
+  const { start, end } = getDateRange();
+  try {
+    const res = await fetch(`${API_BASE}/brand-category-heatmap?start=${start}&end=${end}&ratingType=${state.ratingType}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    renderBrandCategoryHeatmap(data);
+  } catch (e) {
+    console.error('Brand×Cat heatmap failed:', e.message);
+  }
+}
+
+function renderBrandCategoryHeatmap(data) {
+  const container = document.getElementById('brandCatHeatmap');
+  if (!container) return;
+
+  const { cells, brands, categories } = data;
+  if (!brands.length || !categories.length) {
+    container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:24px;">No data available for this date range.</p>';
+    return;
+  }
+
+  // Build a lookup: cell[brand][category] = {hateRate, hateCount, total}
+  const lookup = {};
+  for (const c of cells) {
+    if (!lookup[c.brand]) lookup[c.brand] = {};
+    lookup[c.brand][c.category] = c;
+  }
+
+  // Color scale: 0% = near-transparent navy, 25%+ = dark red
+  function cellBg(rate) {
+    const t = Math.min(rate / 0.25, 1);
+    const r = Math.round(20  + t * (155 - 20));
+    const g = Math.round(35  + t * (0   - 35));
+    const b = Math.round(55  + t * (0   - 55));
+    const a = (0.18 + t * 0.82).toFixed(2);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  const cellW  = 68;
+  const labelW = 140;
+  const gap    = 2;
+  const cols   = categories.length;
+
+  let html = `<div style="
+    display:grid;
+    grid-template-columns:${labelW}px ${Array(cols).fill(cellW + 'px').join(' ')};
+    gap:${gap}px;
+    min-width:${labelW + cols * (cellW + gap)}px;
+    font-size:11px;
+  ">`;
+
+  // Header row — category names
+  html += `<div style="padding:6px 8px;color:var(--text-muted);font-size:10px;font-weight:600;">
+    Brand ↓ &nbsp;/&nbsp; Category →</div>`;
+  for (const cat of categories) {
+    html += `<div style="padding:4px 3px;color:var(--text-muted);text-align:center;font-size:10px;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escapeHtml(cat)}">${escapeHtml(cat)}</div>`;
+  }
+
+  // Data rows — one per brand
+  for (const brand of brands) {
+    const escapedBrand = escapeAttr(brand);
+    html += `<div style="padding:6px 8px;color:var(--text-primary);font-size:11px;font-weight:500;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;border-radius:3px;transition:background 0.15s;"
+      onclick="drillDown('product_brand','${escapedBrand}','product_category')"
+      onmouseover="this.style.background='rgba(0,180,255,0.1)'"
+      onmouseout="this.style.background=''"
+      title="${escapeHtml(brand)} — click to drill into categories">${escapeHtml(brand)}</div>`;
+
+    for (const cat of categories) {
+      const cell = lookup[brand]?.[cat];
+      if (!cell) {
+        html += `<div style="background:rgba(10,15,25,0.4);border-radius:3px;"></div>`;
+      } else {
+        const bg      = cellBg(cell.hateRate);
+        const ratePct = (cell.hateRate * 100).toFixed(1);
+        const txtClr  = cell.hateRate > 0.17 ? '#fff' : '#8899b3';
+        const fw      = cell.hateRate > 0.15 ? 600 : 400;
+        const esc     = escapeAttr(cat);
+        html += `<div style="background:${bg};border-radius:3px;padding:5px 3px;text-align:center;
+          color:${txtClr};font-weight:${fw};cursor:pointer;transition:filter 0.1s;"
+          onclick="drillDown('product_brand','${escapedBrand}','product_category')"
+          onmouseover="this.style.filter='brightness(1.3)'"
+          onmouseout="this.style.filter=''"
+          title="${escapeHtml(brand)} × ${escapeHtml(cat)}: ${ratePct}% hate (${cell.total} items)">${ratePct}%</div>`;
+      }
+    }
+  }
+  html += '</div>';
+
+  // Legend
+  html += `<div style="display:flex;align-items:center;gap:12px;margin-top:10px;font-size:11px;color:var(--text-muted);flex-wrap:wrap;">
+    <span>Hate Rate:</span>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <div style="width:28px;height:13px;background:rgba(20,35,55,0.25);border-radius:2px;border:1px solid rgba(106,136,176,0.2);"></div><span>0%</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <div style="width:28px;height:13px;background:rgba(88,18,28,0.75);border-radius:2px;"></div><span>12%</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <div style="width:28px;height:13px;background:rgba(155,0,0,0.95);border-radius:2px;"></div><span>25%+</span>
+    </div>
+    <span style="margin-left:4px;">⬛ = no data / &lt;3 items &nbsp;·&nbsp; Click brand row or cell → drill into categories</span>
+  </div>`;
+
+  container.innerHTML = html;
+}
+
+// ============================================================
+// SENTIMENT BREAKDOWN (in Enrichment Panel)
+// ============================================================
+
+const SENTIMENT_COLORS = {
+  love_it:    '#22c55e',
+  mostly_me:  '#f59e0b',
+  not_me:     '#ef4444',
+  no_answer:  '#4b5563'
+};
+const SENTIMENT_LABELS = {
+  love_it:   'Love It',
+  mostly_me: 'Mostly Me',
+  not_me:    'Not Me',
+  no_answer: 'No Answer'
+};
+
+function renderSentimentBreakdown(enrichment) {
+  const barEl    = document.getElementById('sentimentBar');
+  const legendEl = document.getElementById('sentimentLegend');
+  const labelEl  = document.getElementById('sentimentLabel');
+  if (!barEl || !legendEl || !labelEl) return;
+
+  const buckets = enrichment.styleAccuracyAll || [];
+  const total   = buckets.reduce((s, b) => s + b.count, 0);
+
+  if (total === 0) {
+    barEl.innerHTML    = '<div style="color:var(--text-muted);font-size:12px;padding:4px 0;">No style accuracy data for this group.</div>';
+    legendEl.innerHTML = '';
+    labelEl.innerHTML  = '';
+    return;
+  }
+
+  // Stacked bar
+  barEl.innerHTML = buckets
+    .filter(b => b.count > 0)
+    .map(b => {
+      const pct  = (b.pct * 100).toFixed(1);
+      const col  = SENTIMENT_COLORS[b.bucket] || '#6b7280';
+      const lbl  = SENTIMENT_LABELS[b.bucket] || b.bucket;
+      return `<div style="flex:${b.pct};background:${col};min-width:${b.pct > 0.03 ? '24px' : '0'};
+        display:flex;align-items:center;justify-content:center;
+        color:#fff;font-size:10px;font-weight:600;cursor:default;transition:filter 0.15s;"
+        onmouseover="this.style.filter='brightness(1.2)'"
+        onmouseout="this.style.filter=''"
+        title="${lbl}: ${pct}%">${b.pct > 0.06 ? pct + '%' : ''}</div>`;
+    }).join('');
+
+  // Legend
+  legendEl.innerHTML = buckets
+    .filter(b => b.count > 0)
+    .map(b => {
+      const pct = (b.pct * 100).toFixed(1);
+      const col = SENTIMENT_COLORS[b.bucket] || '#6b7280';
+      const lbl = SENTIMENT_LABELS[b.bucket] || b.bucket;
+      return `<span style="display:flex;align-items:center;gap:4px;">
+        <span style="display:inline-block;width:10px;height:10px;background:${col};border-radius:2px;"></span>
+        ${escapeHtml(lbl)} ${pct}%
+      </span>`;
+    }).join('');
+
+  // Auto-interpretation
+  const notMe   = buckets.find(b => b.bucket === 'not_me')?.pct   || 0;
+  const loveIt  = buckets.find(b => b.bucket === 'love_it')?.pct  || 0;
+  const mostlyMe = buckets.find(b => b.bucket === 'mostly_me')?.pct || 0;
+
+  let interpretation;
+  if (notMe > 0.40) {
+    interpretation = `⚠️ <strong>Style miss</strong> — ${(notMe*100).toFixed(0)}% of customers said items weren't their style at all. This is a curation signal, not a quality issue. Check if stylist profiling is aligned for this segment.`;
+  } else if (loveIt > 0.60) {
+    interpretation = `✅ <strong>Strong style match</strong> — ${(loveIt*100).toFixed(0)}% of customers loved the style choices. The hate is likely driven by quality or fit, not curation.`;
+  } else if ((loveIt + mostlyMe) > 0.70) {
+    interpretation = `👍 <strong>Good alignment</strong> — Style is landing well overall (${((loveIt+mostlyMe)*100).toFixed(0)}% love it or mostly their style). Focus investigation on quality and fit drivers.`;
+  } else if (notMe > 0.25) {
+    interpretation = `🔍 <strong>Mixed signals</strong> — ${(notMe*100).toFixed(0)}% style miss with some alignment. Worth reviewing profile accuracy and whether category fits the customer's stated preferences.`;
+  } else {
+    interpretation = `📊 <strong>Moderate alignment</strong> — Results are mixed. Dig into fit and quality breakdowns below for more signal.`;
+  }
+  labelEl.innerHTML = interpretation;
+}
+
+// ============================================================
+// ITEM LAG ANALYSIS
+// ============================================================
+
+const itemLagState = {
+  lagWindow:     14,
+  customerType:  'all',
+  selectedWeeks: [],
+  loaded:        false,
+  chart:         null,
+  lastData:      null
+};
+
+function setupItemLagControls() {
+  // Lag window buttons
+  document.querySelectorAll('.il-window-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.il-window-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      itemLagState.lagWindow = parseInt(btn.dataset.days);
+      if (itemLagState.loaded) loadItemLagAnalysis();
+    });
+  });
+
+  // Customer type buttons
+  document.querySelectorAll('.il-ctype-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.il-ctype-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      itemLagState.customerType = btn.dataset.ctype;
+      if (itemLagState.loaded) loadItemLagAnalysis();
+    });
+  });
+
+  // Ship week multi-select
+  const sel = document.getElementById('ilWeekSelect');
+  if (sel) {
+    sel.addEventListener('change', () => {
+      let count = 0;
+      for (const opt of sel.options) {
+        if (opt.selected) {
+          count++;
+          if (count > 4) opt.selected = false;
+        }
+      }
+      itemLagState.selectedWeeks = [...sel.selectedOptions].map(o => o.value).slice(0, 4);
+      if (itemLagState.loaded) loadItemLagAnalysis();
+    });
+  }
+}
+
+async function loadItemLagAnalysis() {
+  // Dimension comes from the Item Health dimension select; default to brand
+  const lagDim = state.dimension || 'product_brand';
+  updateILDimLabel(lagDim);
+
+  const params = new URLSearchParams({
+    lagWindow:    itemLagState.lagWindow,
+    customerType: itemLagState.customerType,
+    dimension:    lagDim
+  });
+  if (itemLagState.selectedWeeks.length > 0) {
+    params.set('weeks', itemLagState.selectedWeeks.join(','));
+  }
+  try {
+    const res = await fetch(`${API_BASE}/item-lag-analysis?${params}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    itemLagState.lastData      = data;
+    itemLagState.loaded        = true;
+    itemLagState.selectedWeeks = data.selectedWeeks;
+    populateILWeekSelector(data.availableWeeks, data.selectedWeeks);
+    renderItemLagCurve(data);
+    renderItemLagHeatmap(data);
+    renderItemLagTable(data);
+    renderItemLagDimBreakdown(data, lagDim);
+  } catch (e) {
+    console.error('Item lag analysis load failed:', e.message);
+  }
+}
+
+function updateILDimLabel(dim) {
+  const label = document.getElementById('ilDimLabel');
+  if (label) label.textContent = getDimensionLabel(dim || 'product_brand');
+}
+
+function populateILWeekSelector(availableWeeks, selectedWeeks) {
+  const sel = document.getElementById('ilWeekSelect');
+  if (!sel) return;
+  const needsRebuild = sel.options.length !== availableWeeks.length
+    || (sel.options[0] && sel.options[0].disabled);
+  if (needsRebuild) {
+    sel.innerHTML = availableWeeks.map(wk =>
+      `<option value="${wk}">${formatWeekLabel(wk)}</option>`
+    ).join('');
+  }
+  for (const opt of sel.options) {
+    opt.selected = selectedWeeks.includes(opt.value);
+  }
+}
+
+function renderItemLagCurve(data) {
+  const canvas = document.getElementById('ilCurveChart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (itemLagState.chart) itemLagState.chart.destroy();
+
+  const { lagCurve, selectedWeeks, lagWindow, medianDaysToRate } = data;
+  const days = Array.from({ length: lagWindow }, (_, i) => i + 1);
+  const rawBuckets = {};
+
+  const datasets = selectedWeeks.map((wk, idx) => {
+    const byDay = lagCurve[wk] || {};
+    rawBuckets[wk] = byDay;
+    const c = LAG_LINE_COLORS[idx] || LAG_LINE_COLORS[0];
+    return {
+      label: formatWeekLabel(wk),
+      _wk:   wk,
+      data:  days.map(d => {
+        const b = byDay[d];
+        if (!b || b.total < 20) return null;
+        return +(b.hate / b.total * 100).toFixed(1);
+      }),
+      borderColor:     c.border,
+      backgroundColor: c.bg,
+      borderWidth: 2,
+      pointRadius: 3,
+      pointHoverRadius: 5,
+      tension: 0.3,
+      spanGaps: false,
+      fill: false,
+    };
+  });
+
+  // Inline median-line plugin (same pattern as box lag)
+  const medianPlugin = {
+    id: 'ilMedianLine',
+    afterDraw(chart) {
+      const med = medianDaysToRate;
+      if (!med || med < 1 || med > lagWindow) return;
+      const xAxis   = chart.scales.x;
+      const tickIdx = med - 1;
+      if (tickIdx >= days.length) return;
+      const x   = xAxis.getPixelForTick(tickIdx);
+      const { top, bottom } = chart.chartArea;
+      const c   = chart.ctx;
+      c.save();
+      c.strokeStyle = 'rgba(255,179,0,0.65)';
+      c.lineWidth   = 1.5;
+      c.setLineDash([6, 4]);
+      c.beginPath();
+      c.moveTo(x, top);
+      c.lineTo(x, bottom);
+      c.stroke();
+      c.setLineDash([]);
+      c.fillStyle = 'rgba(255,179,0,0.8)';
+      c.font      = '10px Inter, sans-serif';
+      c.fillText(`Median: Day ${med}`, x + 4, top + 14);
+      c.restore();
+    }
+  };
+
+  itemLagState.chart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: days.map(d => `Day ${d}`), datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: true, position: 'top', align: 'end',
+          labels: { color: '#6a88b0', font: { size: 10 }, boxWidth: 20, padding: 10, usePointStyle: true }
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const wk     = ctx.dataset._wk;
+              const bucket = rawBuckets[wk]?.[ctx.dataIndex + 1];
+              if (ctx.parsed.y == null) {
+                if (bucket && bucket.total > 0)
+                  return `${ctx.dataset.label}: low vol (${bucket.total} items)`;
+                return `${ctx.dataset.label}: no data`;
+              }
+              const n = bucket ? ` · ${bucket.total} items` : '';
+              return `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%${n}`;
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true, min: 0,
+          ticks: { callback: v => v + '%', color: '#6a88b0', font: { size: 11 } },
+          grid:  { color: 'rgba(0,180,255,0.06)' },
+          title: { display: true, text: 'Item Hate Rate %', color: '#6a88b0', font: { size: 11 } }
+        },
+        x: {
+          ticks: { color: '#6a88b0', font: { size: 10 } },
+          grid:  { color: 'rgba(0,180,255,0.04)' },
+          title: { display: true, text: 'Days Since Ship Date', color: '#6a88b0', font: { size: 11 } }
+        }
+      }
+    },
+    plugins: [medianPlugin]
+  });
+
+  const container = canvas.closest('.chart-container');
+  removeExplainer(container);
+  container.insertAdjacentHTML('beforeend', `<div class="explainer">
+    <strong>What this shows:</strong> Each line tracks how item hate rates developed over days after the ship week.
+    Compare ship weeks to spot whether recent batches are performing differently from earlier ones.
+    <br><br>
+    <strong>Note:</strong> Points with fewer than 20 items are not plotted. The gold dashed line marks the median days-to-rate (Day ${medianDaysToRate}).
+  </div>`);
+}
+
+function renderItemLagHeatmap(data) {
+  const container = document.getElementById('ilHeatmap');
+  if (!container) return;
+
+  const { heatmap, shipWeeks, ratingWeeks } = data;
+  if (!shipWeeks.length || !ratingWeeks.length) {
+    container.innerHTML = '<p style="color:var(--text-muted);padding:16px;">No heatmap data available.</p>';
+    return;
+  }
+
+  function cellBg(rate) {
+    const t = Math.min(rate / 0.30, 1);
+    const r = Math.round(20  + t * (139 - 20));
+    const g = Math.round(35  + t * (0   - 35));
+    const b = Math.round(55  + t * (0   - 55));
+    const a = (0.25 + t * 0.75).toFixed(2);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  const cellW  = 72;
+  const labelW = 122;
+  const gap    = 2;
+  const cols   = ratingWeeks.length;
+
+  let html = `<div style="
+    display:grid;
+    grid-template-columns:${labelW}px ${Array(cols).fill(cellW + 'px').join(' ')};
+    gap:${gap}px;
+    min-width:${labelW + cols * (cellW + gap)}px;
+    font-size:11px;
+  ">`;
+
+  html += `<div style="padding:6px 8px;color:var(--text-muted);font-size:10px;font-weight:600;line-height:1.3;">
+    Ship ↓ &nbsp;/&nbsp; Rating →</div>`;
+  for (const rw of ratingWeeks) {
+    html += `<div style="padding:4px 3px;color:var(--text-muted);text-align:center;font-size:10px;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${formatWeekLabel(rw)}">${formatWeekLabel(rw)}</div>`;
+  }
+
+  for (const sw of shipWeeks) {
+    html += `<div style="padding:6px 8px;color:var(--text-primary);font-size:11px;font-weight:500;
+      cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+      border-radius:3px;transition:background 0.15s;"
+      onclick="ilSelectWeek('${sw}')"
+      onmouseover="this.style.background='rgba(0,180,255,0.1)'"
+      onmouseout="this.style.background=''"
+      title="Click to add to lag curve">${formatWeekLabel(sw)}</div>`;
+
+    for (const rw of ratingWeeks) {
+      const cell = heatmap[sw]?.[rw];
+      if (!cell) {
+        html += `<div style="background:rgba(10,15,25,0.5);border-radius:3px;"></div>`;
+      } else if (cell.total < 20) {
+        html += `<div style="background:rgba(40,55,70,0.5);border-radius:3px;padding:5px 3px;
+          text-align:center;color:var(--text-muted);font-size:10px;" title="${cell.total} items">low vol</div>`;
+      } else {
+        const bg      = cellBg(cell.rate);
+        const ratePct = (cell.rate * 100).toFixed(1);
+        const txtClr  = cell.rate > 0.17 ? '#fff' : '#8899b3';
+        const fw      = cell.rate > 0.15 ? 600 : 400;
+        html += `<div style="background:${bg};border-radius:3px;padding:5px 3px;
+          text-align:center;color:${txtClr};font-weight:${fw};cursor:pointer;transition:filter 0.1s;"
+          onclick="ilSelectWeek('${sw}')"
+          onmouseover="this.style.filter='brightness(1.3)'"
+          onmouseout="this.style.filter=''"
+          title="${cell.total} items | ${ratePct}% hate">${ratePct}%</div>`;
+      }
+    }
+  }
+  html += '</div>';
+
+  html += `<div style="display:flex;align-items:center;gap:12px;margin-top:10px;
+    font-size:11px;color:var(--text-muted);flex-wrap:wrap;">
+    <span>Hate Rate:</span>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <div style="width:28px;height:13px;background:rgba(20,35,55,0.4);
+        border-radius:2px;border:1px solid rgba(106,136,176,0.2);"></div><span>0%</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <div style="width:28px;height:13px;background:rgba(80,18,28,0.75);border-radius:2px;"></div><span>15%</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <div style="width:28px;height:13px;background:rgba(139,0,0,0.95);border-radius:2px;"></div><span>30%+</span>
+    </div>
+    <span style="margin-left:4px;">⬛ = no data &nbsp;·&nbsp; gray = &lt;20 items &nbsp;·&nbsp; Click row or cell → adds to lag curve</span>
+  </div>`;
+
+  container.innerHTML = html;
+}
+
+function ilSelectWeek(weekStr) {
+  const sel = document.getElementById('ilWeekSelect');
+  if (!sel) return;
+  const opt = [...sel.options].find(o => o.value === weekStr);
+  if (!opt) return;
+  if (!opt.selected) {
+    const numSelected = [...sel.selectedOptions].length;
+    if (numSelected >= 4) {
+      const first = [...sel.selectedOptions][0];
+      if (first) first.selected = false;
+    }
+    opt.selected = true;
+  }
+  itemLagState.selectedWeeks = [...sel.selectedOptions].map(o => o.value);
+  loadItemLagAnalysis();
+}
+
+function renderItemLagTable(data) {
+  const tbody = document.getElementById('ilTableBody');
+  if (!tbody) return;
+
+  const { table } = data;
+  if (!table.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px;">Select a ship week above to see breakdown</td></tr>';
+    return;
+  }
+
+  const sorted = [...table].sort((a, b) => b.hateRate - a.hateRate);
+  tbody.innerHTML = sorted.map(row => {
+    const lowVol    = row.total < 20;
+    const hateStyle = !lowVol && row.hateRate > 0.18 ? 'color:var(--dark-side)'  :
+                      !lowVol && row.hateRate < 0.12 ? 'color:var(--light-side)' : '';
+    const newPct = row.newHateRate       != null ? `${(row.newHateRate       * 100).toFixed(1)}%` : '—';
+    const recPct = row.recurringHateRate != null ? `${(row.recurringHateRate * 100).toFixed(1)}%` : '—';
+    const newN   = row.newTotal > 0 ? ` <span style="color:var(--text-muted);font-size:10px;">(${row.newTotal})</span>` : '';
+    const recN   = row.recTotal > 0 ? ` <span style="color:var(--text-muted);font-size:10px;">(${row.recTotal})</span>` : '';
+    const daysStr = row.avgDaysToRate != null ? `${row.avgDaysToRate}d` : '—';
+    return `<tr${lowVol ? ' class="low-vol-row"' : ''}>
+      <td><strong>${formatWeekLabel(row.shipWeek)}</strong></td>
+      <td>${lowVol ? '<span class="low-vol">low vol</span>' : row.total.toLocaleString()}</td>
+      <td style="${hateStyle};font-weight:600">${(row.hateRate * 100).toFixed(1)}%</td>
+      <td style="color:var(--light-side)">${(row.loveRate * 100).toFixed(1)}%</td>
+      <td>${daysStr}</td>
+      <td>${newPct}${newN}</td>
+      <td>${recPct}${recN}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderItemLagDimBreakdown(data, dim) {
+  const section   = document.getElementById('ilDimSection');
+  const titleEl   = document.getElementById('ilDimTitle');
+  const tablesEl  = document.getElementById('ilDimTables');
+  if (!section || !tablesEl) return;
+
+  const { dimensionBreakdown, selectedWeeks, baselineRate } = data;
+  const activeDim = dim || state.dimension || 'product_brand';
+
+  // Hide if no breakdown data at all
+  if (!dimensionBreakdown || Object.keys(dimensionBreakdown).length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'block';
+  const dimLabel = getDimensionLabel(activeDim);
+  if (titleEl) titleEl.textContent = `📊 ${dimLabel} Breakdown by Ship Week`;
+
+  const multiWeek = selectedWeeks.length > 1;
+
+  // Build combined rows with ship week attached (for multi-week grouping)
+  const allRows = [];
+  for (const wk of selectedWeeks) {
+    const rows = dimensionBreakdown[wk] || [];
+    for (const r of rows) allRows.push({ ...r, shipWeek: wk });
+  }
+
+  if (!allRows.length) {
+    tablesEl.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:12px 0;">No dimension data available for selected weeks.</div>`;
+    return;
+  }
+
+  // Render one unified table; ship week sub-header rows separate weeks when multiple selected
+  const baselinePct = ((baselineRate || 0) * 100).toFixed(1);
+
+  let tbody = '';
+  let lastWk = null;
+  for (const r of allRows) {
+    if (multiWeek && r.shipWeek !== lastWk) {
+      lastWk = r.shipWeek;
+      tbody += `<tr style="background:rgba(255,255,255,0.04);">
+        <td colspan="7" style="font-weight:600;font-size:11px;color:var(--text-secondary);
+                               padding:8px 12px;letter-spacing:0.05em;text-transform:uppercase;">
+          📅 Ship Week: ${formatWeekLabel(r.shipWeek)}
+        </td></tr>`;
+    }
+
+    const hStyle = r.hateRate > 0.20 ? 'color:var(--dark-side);font-weight:600'
+                 : r.hateRate < 0.10 ? 'color:var(--light-side)' : '';
+    const liftSign  = r.lift >= 0 ? '+' : '';
+    const liftStyle = r.lift > 0.10 ? 'color:var(--dark-side);font-weight:600'
+                    : r.lift < -0.10 ? 'color:var(--light-side)' : '';
+    const zStyle    = Math.abs(r.zScore) >= 1.96 ? 'font-weight:600' : '';
+    const zColor    = r.zScore >= 1.96 ? 'color:var(--dark-side)' : r.zScore <= -1.96 ? 'color:var(--light-side)' : '';
+    const sigBadge  = r.significant ? '<span style="font-size:9px;background:rgba(239,68,68,0.15);color:var(--dark-side);border-radius:3px;padding:1px 4px;margin-left:4px;">sig</span>' : '';
+    const newPct    = r.newHateRate       != null ? (r.newHateRate       * 100).toFixed(1) + '%' : '—';
+    const recPct    = r.recurringHateRate != null ? (r.recurringHateRate * 100).toFixed(1) + '%' : '—';
+
+    tbody += `<tr>
+      <td>${escapeHtml(r.value)}</td>
+      ${multiWeek ? '' : `<td>${formatWeekLabel(r.shipWeek)}</td>`}
+      <td>${r.total.toLocaleString()}</td>
+      <td style="${hStyle}">${(r.hateRate * 100).toFixed(1)}%</td>
+      <td style="${liftStyle}">${liftSign}${(r.lift * 100).toFixed(1)}%</td>
+      <td style="${zStyle};${zColor}">${r.zScore.toFixed(2)}${sigBadge}</td>
+      <td>${newPct}</td>
+      <td>${recPct}</td>
+    </tr>`;
+  }
+
+  // Show "Ship Week" column only when single week selected (otherwise sub-headers used)
+  const weekCol = multiWeek ? '' : '<th>Ship Week</th>';
+
+  tablesEl.innerHTML = `
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">
+      Overall baseline hate rate: <strong style="color:var(--text-primary);">${baselinePct}%</strong>
+    </div>
+    <table class="driver-table">
+      <thead><tr>
+        <th>${dimLabel}</th>
+        ${weekCol}
+        <th title="Total items rated for this dimension value in this ship week">Items</th>
+        <th title="% of items rated 1 or 2 stars">Hate Rate</th>
+        <th title="How much higher or lower vs the overall average">Lift vs Avg</th>
+        <th title="Statistical significance: |Z| ≥ 1.96 = significant (marked 'sig')">Z-Score</th>
+        <th title="Hate rate for first-box (new) customers">New Hate Rate</th>
+        <th title="Hate rate for returning customers">Rec Hate Rate</th>
+      </tr></thead>
+      <tbody>${tbody}</tbody>
+    </table>`;
+}
+
+// ============================================================
+// ACTION SIGNALS
+// ============================================================
+
+async function loadActionSignals() {
+  const { start, end } = getReportDateRange();
+  const params = new URLSearchParams({ ratingType: state.ratingType });
+  if (start) params.set('start', start);
+  if (end)   params.set('end',   end);
+  try {
+    const res = await fetch(`${API_BASE}/action-signals?${params}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    renderActionSignals(data);
+  } catch (e) {
+    console.error('Action signals failed:', e.message);
+  }
+}
+
+function renderActionSignals({ signals, baselineRate }) {
+  const listEl  = document.getElementById('actionSignalsList');
+  const countEl = document.getElementById('actionSignalsCount');
+  if (!listEl) return;
+
+  if (!signals || signals.length === 0) {
+    countEl.textContent = '0 signals';
+    listEl.innerHTML = `<div style="padding:20px 0;color:var(--text-muted);font-size:13px;text-align:center;">
+      🌟 No signals detected. The Force is strong this period.
+    </div>`;
+    return;
+  }
+
+  countEl.textContent = `${signals.length} signal${signals.length !== 1 ? 's' : ''} detected`;
+
+  const SIGNAL_META = {
+    cut: {
+      badge:  '🔴 CUT CONSIDERATION',
+      border: '#ef4444',
+      bg:     'rgba(239,68,68,0.07)',
+      action: 'Consider reducing or pausing orders. Sustained elevated hate rate with high statistical confidence.'
+    },
+    fix_targeting: {
+      badge:  '🟢 FIX TARGETING',
+      border: '#22c55e',
+      bg:     'rgba(34,197,94,0.07)',
+      action: 'Style mismatch is the dominant complaint. Review stylist picks and customer profile matching — do not cut inventory yet.'
+    },
+    watch: {
+      badge:  '🟡 WATCH',
+      border: '#f59e0b',
+      bg:     'rgba(245,158,11,0.07)',
+      action: 'Monitor closely. Elevated but not yet confirmed — check again next week.'
+    }
+  };
+
+  listEl.innerHTML = signals.map(s => {
+    const meta      = SIGNAL_META[s.signalType];
+    const dimLabel  = getDimensionLabel(s.dimension);
+    const hateRatePct = (s.hateRate * 100).toFixed(1);
+    const liftPct   = (s.lift * 100).toFixed(0);
+    const liftSign  = s.lift > 0 ? '+' : '';
+    const sigBadge  = s.significant
+      ? '<span class="badge badge--sig">⚠️ Significant</span>'
+      : '<span class="badge badge--not">Not yet significant</span>';
+
+    const weeksLabel = s.weeksElevated === 0
+      ? '<1 wk'
+      : `${s.weeksElevated} wk${s.weeksElevated !== 1 ? 's' : ''}`;
+
+    const notMeNote = s.notMePct > 0.3
+      ? `<span style="font-size:11px;color:var(--text-muted);margin-left:8px;">
+          (${(s.notMePct * 100).toFixed(0)}% "Not My Style")</span>`
+      : '';
+
+    return `<div style="
+        border-left:3px solid ${meta.border};
+        background:${meta.bg};
+        border-radius:0 8px 8px 0;
+        padding:14px 16px;
+        margin-bottom:10px;
+        display:flex;
+        flex-direction:column;
+        gap:8px;
+      ">
+      <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;">
+        <!-- Identity -->
+        <div style="flex:0 0 auto;min-width:140px;">
+          <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;color:${meta.border};
+            font-family:'Orbitron',sans-serif;margin-bottom:4px;">${meta.badge}</div>
+          <div style="font-size:20px;font-weight:700;color:var(--text-primary);
+            letter-spacing:0.02em;line-height:1.1;">${escapeHtml(s.value)}</div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${escapeHtml(dimLabel)}</div>
+        </div>
+        <!-- Metrics grid -->
+        <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start;flex:1;">
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Hate Rate</div>
+            <div style="font-size:18px;font-weight:700;color:${s.hateRate > 0.20 ? '#ef4444' : 'var(--text-primary)'};">${hateRatePct}%</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Lift vs Avg</div>
+            <div style="font-size:18px;font-weight:700;color:#ef4444;">${liftSign}${liftPct}%</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Z-Score</div>
+            <div style="font-size:18px;font-weight:700;color:var(--text-primary);">${s.zScore.toFixed(2)}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Weeks Elevated</div>
+            <div style="font-size:18px;font-weight:700;color:var(--text-primary);">${weeksLabel}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Items Rated</div>
+            <div style="font-size:18px;font-weight:700;color:var(--text-primary);">${s.total.toLocaleString()}</div>
+          </div>
+        </div>
+      </div>
+      <!-- Recommended action -->
+      <div style="font-size:12px;color:var(--text-secondary);padding-top:4px;border-top:1px solid rgba(106,136,176,0.12);">
+        <strong>→</strong> ${escapeHtml(meta.action)}${notMeNote}
+        <span style="margin-left:10px;">${sigBadge}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ============================================================
+// INTEL REPORT — Time Range State & Controls
+// ============================================================
+
+const reportState = {
+  dateDays:    30,    // default: 1 month; 0 = all time; -1 = custom
+  customStart: null,
+  customEnd:   null
+};
+
+function getReportDateRange() {
+  if (reportState.dateDays === -1) {
+    return { start: reportState.customStart || null, end: reportState.customEnd || null };
+  }
+  if (!reportState.dateDays) return { start: null, end: null };
+  // Compute from today backwards
+  const end   = new Date().toISOString().split('T')[0];
+  const start = new Date(Date.now() - reportState.dateDays * 86400000).toISOString().split('T')[0];
+  return { start, end };
+}
+
+function setupReportControls() {
+  document.querySelectorAll('.report-range-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.report-range-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const customPanel = document.getElementById('reportCustomRange');
+      if (btn.dataset.days === 'custom') {
+        reportState.dateDays = -1;
+        if (customPanel) customPanel.style.display = 'flex';
+      } else {
+        reportState.dateDays   = parseInt(btn.dataset.days) || 0;
+        reportState.customStart = null;
+        reportState.customEnd   = null;
+        if (customPanel) customPanel.style.display = 'none';
+      }
+    });
+  });
+
+  document.getElementById('reportCustomStart')?.addEventListener('change', (e) => {
+    reportState.customStart = e.target.value || null;
+  });
+  document.getElementById('reportCustomEnd')?.addEventListener('change', (e) => {
+    reportState.customEnd = e.target.value || null;
+  });
+}

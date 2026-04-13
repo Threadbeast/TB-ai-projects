@@ -1,0 +1,63 @@
+services:
+  proxy:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: tb-proxy
+    ports:
+      - "8080:80"
+    environment:
+      PORT: "80"
+      ANALYZER_UPSTREAM: "hate-it-rate-analyzer:3000"
+      PIPELINE_UPSTREAM: "pipeline:80"
+      ANALYZER_SCHEME: "http"
+      PIPELINE_SCHEME: "http"
+    depends_on:
+      - hate-it-rate-analyzer
+      - pipeline
+    restart: unless-stopped
+
+  hate-it-rate-analyzer:
+    build:
+      context: ./projects/hate-it-rate-analyzer
+      dockerfile: Dockerfile
+    container_name: hate-it-rate-analyzer
+    env_file:
+      - ./projects/hate-it-rate-analyzer/.env
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  pipeline:
+    build:
+      context: projects/pipeline
+      dockerfile: Dockerfile
+      # BuildKit secrets — consumed by RUN --mount=type=secret in the Dockerfile.
+      # Files referenced in the top-level `secrets:` block must exist on the host
+      # before running `docker compose build`.
+      secrets:
+        - gcp_sa
+        - anthropic_api_key
+    container_name: pipeline
+    expose:
+      - "80"
+    # Credentials are also mounted at runtime so operators can
+    # `docker compose exec pipeline claude …` or rerun run_customer.py without
+    # rebuilding. The claude binary in the image is a wrapper that auto-loads
+    # ANTHROPIC_API_KEY from /run/secrets/anthropic_api_key.
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp_sa
+    secrets:
+      - gcp_sa
+      - anthropic_api_key
+    restart: unless-stopped
+
+secrets:
+  gcp_sa:
+    # Your personal gcloud Application Default Credentials.
+    # Create with: `gcloud auth application-default login`
+    # (default path on macOS/Linux shown below).
+    file: ${HOME}/.config/gcloud/application_default_credentials.json
+  anthropic_api_key:
+    # Plain-text file containing your Anthropic API key (no trailing newline needed).
+    file: ./secrets/anthropic-api-key.txt

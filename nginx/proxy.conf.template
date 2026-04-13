@@ -1,0 +1,46 @@
+# Docker's embedded DNS so upstream hostnames are resolved lazily at request
+# time — safe for both docker-compose networks and Cloud Run's *.run.app URLs
+# (which route via Google's public DNS).
+resolver 127.0.0.11 8.8.8.8 valid=30s ipv6=off;
+
+server {
+    listen ${PORT};
+    server_name _;
+
+    # ── Landing page at / ────────────────────────────────────
+    location = / {
+        root /usr/share/nginx/html;
+        try_files /index.html =404;
+    }
+
+    # ── Hate It Rate Analyzer at /analyzer/ ──────────────────
+    # Strips the /analyzer prefix before forwarding, so
+    # /analyzer/api/* arrives at the backend as /api/*.
+    location /analyzer/ {
+        set $analyzer_upstream "${ANALYZER_UPSTREAM}";
+        proxy_pass ${ANALYZER_SCHEME}://$analyzer_upstream/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $analyzer_upstream;
+        proxy_ssl_server_name on;
+        proxy_ssl_name $analyzer_upstream;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Prefix /analyzer;
+        proxy_read_timeout 300s;
+    }
+
+    # ── Pipeline Viewer at /pipeline/ ────────────────────────
+    location /pipeline/ {
+        set $pipeline_upstream "${PIPELINE_UPSTREAM}";
+        proxy_pass ${PIPELINE_SCHEME}://$pipeline_upstream/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $pipeline_upstream;
+        proxy_ssl_server_name on;
+        proxy_ssl_name $pipeline_upstream;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Prefix /pipeline;
+    }
+}

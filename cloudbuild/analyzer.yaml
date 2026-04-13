@@ -1,0 +1,51 @@
+# Cloud Build config for the `tb-analyzer` Cloud Run service.
+#
+# Submit with:
+#   gcloud builds submit --config=cloudbuild/analyzer.yaml \
+#       --substitutions=_REGION=us-central1 .
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE: tb-analyzer
+  _REPO: tb-ai-projects
+  _IMAGE_TAG: latest
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_IMAGE_TAG}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}
+      - projects/hate-it-rate-analyzer
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_IMAGE_TAG}
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --set-secrets=ANTHROPIC_API_KEY=anthropic-api-key:latest
+      - --service-account=tb-analyzer@${PROJECT_ID}.iam.gserviceaccount.com
+      - --memory=1Gi
+      - --cpu=1
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_IMAGE_TAG}
