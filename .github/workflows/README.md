@@ -57,7 +57,7 @@ printf '%s' 'sk-ant-api03-...' | \
     gcloud secrets create anthropic-api-key --data-file=-
 
 # Service-account JSON with BigQuery read access (pipeline build time only)
-gcloud secrets create gcp-sa-json --data-file=./secrets/gcp-sa.json
+gcloud secrets create gcp-sa-json --data-file=./secrets/gcp-sa-key.json
 ```
 
 ### 4. Create runtime service accounts
@@ -68,7 +68,7 @@ These are the identities the Cloud Run services run as.
 gcloud iam service-accounts create tb-analyzer \
     --display-name="TB analyzer runtime"
 gcloud secrets add-iam-policy-binding anthropic-api-key \
-    --member="serviceAccount:tb-analyzer@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --member="serviceAccount:ai-projects@${PROJECT_ID}.iam.gserviceaccount.com" \
     --role=roles/secretmanager.secretAccessor
 
 gcloud iam service-accounts create tb-pipeline \
@@ -96,7 +96,7 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 
 # Read the pipeline's build-time secrets from Secret Manager
 for SECRET in anthropic-api-key gcp-sa-json; do
-    gcloud secrets add-iam-policy-binding "$SECRET" \
+    gcloud secrets add-iam-policy-binding gcp-sa-json \
         --member="serviceAccount:${DEPLOYER}" \
         --role=roles/secretmanager.secretAccessor
 done

@@ -38,19 +38,16 @@ jobs:
       # Pipeline Dockerfile needs two BuildKit secrets at build time:
       #   - anthropic_api_key → for the `claude` CLI invoked during generation
       #   - gcp_sa            → service-account JSON with BigQuery read access
-      - name: Fetch build-time secrets from Secret Manager
-        id: secrets
-        uses: google-github-actions/get-secretmanager-secrets@v2
-        with:
-          secrets: |-
-            ANTHROPIC_API_KEY:${{ vars.GCP_PROJECT_ID }}/anthropic-api-key
-            GCP_SA_JSON:${{ vars.GCP_PROJECT_ID }}/gcp-sa-json
-
+      # Fetch directly to files via gcloud to avoid shell-expansion mangling.
       - name: Stage secret files for BuildKit
         run: |
           mkdir -p _secrets
-          printf '%s' "${{ steps.secrets.outputs.ANTHROPIC_API_KEY }}" > _secrets/anthropic_api_key
-          printf '%s' "${{ steps.secrets.outputs.GCP_SA_JSON }}"       > _secrets/gcp_sa.json
+          gcloud secrets versions access latest \
+              --secret=anthropic-api-key \
+              --project="$GCP_PROJECT_ID" > _secrets/anthropic_api_key
+          gcloud secrets versions access latest \
+              --secret=gcp-sa-json \
+              --project="$GCP_PROJECT_ID" > _secrets/gcp_sa.json
           chmod 600 _secrets/*
 
       - name: Compute image tags
