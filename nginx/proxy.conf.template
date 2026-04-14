@@ -14,6 +14,12 @@ server {
         try_files /index.html =404;
     }
 
+    # ── Trailing-slash redirects ────────────────────────────
+    # Without these, /analyzer (no slash) doesn't match
+    # location /analyzer/ and relative asset paths break.
+    location = /analyzer { return 301 /analyzer/; }
+    location = /pipeline { return 301 /pipeline/; }
+
     # ── Hate It Rate Analyzer at /analyzer/ ──────────────────
     # Strips the /analyzer prefix before forwarding, so
     # /analyzer/api/* arrives at the backend as /api/*.
