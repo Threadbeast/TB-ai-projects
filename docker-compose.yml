@@ -12,6 +12,7 @@ services:
       PIPELINE_UPSTREAM: "pipeline:80"
       ANALYZER_SCHEME: "http"
       PIPELINE_SCHEME: "http"
+      NGINX_RESOLVER: "127.0.0.11"
     depends_on:
       - hate-it-rate-analyzer
       - pipeline

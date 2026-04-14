@@ -1,7 +1,8 @@
-# Docker's embedded DNS so upstream hostnames are resolved lazily at request
-# time — safe for both docker-compose networks and Cloud Run's *.run.app URLs
-# (which route via Google's public DNS).
-resolver 127.0.0.11 8.8.8.8 valid=30s ipv6=off;
+# DNS resolver for lazy upstream hostname resolution.
+# NGINX_RESOLVER is set per environment:
+#   - Docker Compose: 127.0.0.11 (Docker's embedded DNS)
+#   - Cloud Run:      8.8.8.8 8.8.4.4 (Google public DNS)
+resolver ${NGINX_RESOLVER} valid=30s ipv6=off;
 
 server {
     listen ${PORT};

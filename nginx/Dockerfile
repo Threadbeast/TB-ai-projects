@@ -16,6 +16,7 @@ ENV PORT=80 \
     PIPELINE_UPSTREAM="pipeline:80" \
     ANALYZER_SCHEME="http" \
     PIPELINE_SCHEME="http" \
+    NGINX_RESOLVER="8.8.8.8 8.8.4.4" \
     NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx/conf.d
 
 COPY proxy.conf.template /etc/nginx/templates/default.conf.template
