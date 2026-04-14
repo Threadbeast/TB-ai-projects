@@ -19,7 +19,6 @@ substitutions:
   _REGION: us-central1
   _SERVICE: tb-proxy
   _REPO: tb-ai-projects
-  _IMAGE_TAG: latest
   # Host (no scheme, no trailing slash) of the analyzer Cloud Run service.
   _ANALYZER_UPSTREAM: ""
   # Host (no scheme, no trailing slash) of the pipeline Cloud Run service.
@@ -31,9 +30,9 @@ steps:
     args:
       - build
       - -t
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_IMAGE_TAG}
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest
       - -t
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${BUILD_ID}
       - nginx
 
   - id: push
@@ -50,7 +49,7 @@ steps:
       - run
       - deploy
       - ${_SERVICE}
-      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_IMAGE_TAG}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest
       - --region=${_REGION}
       - --platform=managed
       - --allow-unauthenticated
@@ -62,4 +61,4 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 images:
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_IMAGE_TAG}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest
