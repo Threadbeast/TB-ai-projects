@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - 'nginx/**'
-      - 'cloudbuild/proxy.yaml'
       - '.github/workflows/deploy-proxy.yml'
   workflow_dispatch:
 
@@ -13,12 +12,15 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ vars.GCP_REGION }}
+  AR_REPO: tb-ai-projects
+  SERVICE: tb-proxy
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      GCP_REGION: ${{ vars.GCP_REGION }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,33 +32,56 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev --quiet
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/${SERVICE}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=${IMAGE}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: nginx
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.sha_tag }}
+            ${{ steps.tags.outputs.latest_tag }}
+
       - name: Resolve upstream Cloud Run URLs
         id: upstreams
         run: |
           ANALYZER_URL=$(gcloud run services describe tb-analyzer \
-              --project="$GCP_PROJECT_ID" \
-              --region="$GCP_REGION" \
+              --project="$GCP_PROJECT_ID" --region="$GCP_REGION" \
               --format='value(status.url)')
           PIPELINE_URL=$(gcloud run services describe tb-pipeline \
-              --project="$GCP_PROJECT_ID" \
-              --region="$GCP_REGION" \
+              --project="$GCP_PROJECT_ID" --region="$GCP_REGION" \
               --format='value(status.url)')
           echo "analyzer_host=${ANALYZER_URL#https://}" >> "$GITHUB_OUTPUT"
           echo "pipeline_host=${PIPELINE_URL#https://}" >> "$GITHUB_OUTPUT"
 
-      - name: Submit Cloud Build
+      - name: Deploy to Cloud Run
         run: |
-          gcloud builds submit \
+          gcloud run deploy "$SERVICE" \
             --project="$GCP_PROJECT_ID" \
-            --config=cloudbuild/proxy.yaml \
-            --substitutions="_REGION=${GCP_REGION},_ANALYZER_UPSTREAM=${{ steps.upstreams.outputs.analyzer_host }},_PIPELINE_UPSTREAM=${{ steps.upstreams.outputs.pipeline_host }}" \
-            .
+            --region="$GCP_REGION" \
+            --image="${{ steps.tags.outputs.sha_tag }}" \
+            --platform=managed \
+            --allow-unauthenticated \
+            --set-env-vars="ANALYZER_UPSTREAM=${{ steps.upstreams.outputs.analyzer_host }},PIPELINE_UPSTREAM=${{ steps.upstreams.outputs.pipeline_host }},ANALYZER_SCHEME=https,PIPELINE_SCHEME=https" \
+            --memory=256Mi \
+            --cpu=1
 
       - name: Print public URL
         run: |
-          PROXY_URL=$(gcloud run services describe tb-proxy \
-              --project="$GCP_PROJECT_ID" \
-              --region="$GCP_REGION" \
+          URL=$(gcloud run services describe "$SERVICE" \
+              --project="$GCP_PROJECT_ID" --region="$GCP_REGION" \
               --format='value(status.url)')
           echo "### Proxy deployed 🚀" >> "$GITHUB_STEP_SUMMARY"
-          echo "Public URL: $PROXY_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "Public URL: $URL" >> "$GITHUB_STEP_SUMMARY"

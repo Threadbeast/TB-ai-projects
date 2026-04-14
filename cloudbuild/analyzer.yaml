@@ -15,9 +15,9 @@ steps:
     args:
       - build
       - -t
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"
       - -t
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${BUILD_ID}
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${BUILD_ID}"
       - projects/hate-it-rate-analyzer
 
   - id: push

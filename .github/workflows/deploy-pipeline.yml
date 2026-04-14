@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - 'projects/pipeline/**'
-      - 'cloudbuild/pipeline.yaml'
       - '.github/workflows/deploy-pipeline.yml'
   workflow_dispatch:
 
@@ -13,12 +12,15 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ vars.GCP_REGION }}
+  AR_REPO: tb-ai-projects
+  SERVICE: tb-pipeline
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      GCP_REGION: ${{ vars.GCP_REGION }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,10 +32,70 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Submit Cloud Build
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev --quiet
+
+      # Pipeline Dockerfile needs two BuildKit secrets at build time:
+      #   - anthropic_api_key → for the `claude` CLI invoked during generation
+      #   - gcp_sa            → service-account JSON with BigQuery read access
+      - name: Fetch build-time secrets from Secret Manager
+        id: secrets
+        uses: google-github-actions/get-secretmanager-secrets@v2
+        with:
+          secrets: |-
+            ANTHROPIC_API_KEY:${{ vars.GCP_PROJECT_ID }}/anthropic-api-key
+            GCP_SA_JSON:${{ vars.GCP_PROJECT_ID }}/gcp-sa-json
+
+      - name: Stage secret files for BuildKit
         run: |
-          gcloud builds submit \
+          mkdir -p _secrets
+          printf '%s' "${{ steps.secrets.outputs.ANTHROPIC_API_KEY }}" > _secrets/anthropic_api_key
+          printf '%s' "${{ steps.secrets.outputs.GCP_SA_JSON }}"       > _secrets/gcp_sa.json
+          chmod 600 _secrets/*
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/${SERVICE}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=${IMAGE}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: projects/pipeline
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.sha_tag }}
+            ${{ steps.tags.outputs.latest_tag }}
+          secret-files: |
+            anthropic_api_key=_secrets/anthropic_api_key
+            gcp_sa=_secrets/gcp_sa.json
+
+      - name: Scrub staged secrets
+        if: always()
+        run: rm -rf _secrets
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE" \
             --project="$GCP_PROJECT_ID" \
-            --config=cloudbuild/pipeline.yaml \
-            --substitutions="_REGION=${GCP_REGION}" \
-            .
+            --region="$GCP_REGION" \
+            --image="${{ steps.tags.outputs.sha_tag }}" \
+            --platform=managed \
+            --allow-unauthenticated \
+            --set-secrets=/run/secrets/anthropic_api_key=anthropic-api-key:latest \
+            --service-account="tb-pipeline@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
+            --memory=1Gi \
+            --cpu=1
+
+      - name: Print service URL
+        run: |
+          URL=$(gcloud run services describe "$SERVICE" \
+              --project="$GCP_PROJECT_ID" --region="$GCP_REGION" \
+              --format='value(status.url)')
+          echo "### $SERVICE deployed 🚀" >> "$GITHUB_STEP_SUMMARY"
+          echo "URL: $URL" >> "$GITHUB_STEP_SUMMARY"

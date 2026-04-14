@@ -1,8 +1,9 @@
 # GitHub Actions → Cloud Run
 
-Three workflows, one per service. Each one runs `gcloud builds submit` against
-the matching `cloudbuild/*.yaml`, so the actual build/push/deploy logic lives in
-Cloud Build — GitHub Actions is just the trigger.
+Three workflows, one per service. Each builds the Docker image directly on the
+GitHub runner, pushes to Artifact Registry at
+`us-central1-docker.pkg.dev/<project>/tb-ai-projects/<service>`, and deploys to
+Cloud Run.
 
 | Workflow | Triggers when you change |
 |---|---|
@@ -12,56 +13,105 @@ Cloud Build — GitHub Actions is just the trigger.
 
 All three also support manual runs from the Actions tab (`workflow_dispatch`).
 
-The proxy workflow additionally resolves the analyzer + pipeline `*.run.app`
-URLs at run time so the nginx config always points at the current backends.
+The pipeline workflow pulls two build-time secrets (`anthropic-api-key`,
+`gcp-sa-json`) from Secret Manager and feeds them into BuildKit via
+`--secret=id=...,src=...`, matching the `RUN --mount=type=secret` lines in
+`projects/pipeline/Dockerfile`.
+
+The proxy workflow resolves the current analyzer + pipeline `*.run.app` URLs at
+deploy time and passes them to the proxy as env vars, so nginx always points at
+the latest backends.
+
+Each image is tagged with both `:latest` and `:<short-sha>` (7-char commit SHA).
+Cloud Run is deployed from the immutable `:<short-sha>` tag so re-runs don't
+accidentally roll back.
 
 ---
 
-## One-time setup (Workload Identity Federation)
+## One-time setup
 
-GitHub Actions authenticates to GCP without a long-lived key by exchanging a
-short-lived GitHub OIDC token for GCP credentials. This is a one-time setup.
-
-Replace placeholders below. `YOUR_GITHUB_ORG/YOUR_REPO` is e.g. `threadbeast/TB-ai-projects`.
-
-### 1. Do the Cloud Build setup first
-
-Follow `cloudbuild/README.md` all the way through (enable APIs, create the
-Artifact Registry repo, upload secrets to Secret Manager, create the
-`tb-analyzer` / `tb-pipeline` runtime service accounts, grant Cloud Build its
-roles).
-
-### 2. Create a deployer service account
-
-This is the identity GitHub Actions impersonates.
+### 1. Enable APIs
 
 ```bash
-gcloud iam service-accounts create tb-gh-deployer \
-    --display-name="GitHub Actions deployer"
-
-DEPLOYER="tb-gh-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
-
-# Needed to submit Cloud Build jobs and read their output
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${DEPLOYER}" --role=roles/cloudbuild.builds.editor
-
-# Needed because Cloud Build uploads the source tarball to a GCS bucket
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${DEPLOYER}" --role=roles/storage.admin
-
-# Needed so the proxy workflow can read the analyzer/pipeline .run.app URLs
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${DEPLOYER}" --role=roles/run.viewer
-
-# Needed so gcloud can act as the Cloud Build service account
-PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
-gcloud iam service-accounts add-iam-policy-binding \
-    "${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
-    --member="serviceAccount:${DEPLOYER}" \
-    --role=roles/iam.serviceAccountUser
+gcloud services enable \
+    run.googleapis.com \
+    artifactregistry.googleapis.com \
+    secretmanager.googleapis.com \
+    iamcredentials.googleapis.com
 ```
 
-### 3. Create the Workload Identity Pool + Provider
+### 2. Create the Artifact Registry repo
+
+```bash
+gcloud artifacts repositories create tb-ai-projects \
+    --repository-format=docker \
+    --location=us-central1 \
+    --description="TB AI projects container images"
+```
+
+### 3. Upload secrets to Secret Manager
+
+```bash
+# Anthropic API key (analyzer + pipeline, at both build and runtime)
+printf '%s' 'sk-ant-api03-...' | \
+    gcloud secrets create anthropic-api-key --data-file=-
+
+# Service-account JSON with BigQuery read access (pipeline build time only)
+gcloud secrets create gcp-sa-json --data-file=./secrets/gcp-sa.json
+```
+
+### 4. Create runtime service accounts
+
+These are the identities the Cloud Run services run as.
+
+```bash
+gcloud iam service-accounts create tb-analyzer \
+    --display-name="TB analyzer runtime"
+gcloud secrets add-iam-policy-binding anthropic-api-key \
+    --member="serviceAccount:tb-analyzer@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role=roles/secretmanager.secretAccessor
+
+gcloud iam service-accounts create tb-pipeline \
+    --display-name="TB pipeline runtime"
+gcloud secrets add-iam-policy-binding anthropic-api-key \
+    --member="serviceAccount:tb-pipeline@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role=roles/secretmanager.secretAccessor
+```
+
+### 5. Create the deployer service account
+
+This is the identity GitHub Actions impersonates via Workload Identity
+Federation. In this repo we use `ai-projects@threadbeast-devops.iam.gserviceaccount.com`.
+
+```bash
+DEPLOYER="ai-projects@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# Push images to Artifact Registry
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${DEPLOYER}" --role=roles/artifactregistry.writer
+
+# Deploy and view Cloud Run services
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${DEPLOYER}" --role=roles/run.admin
+
+# Read the pipeline's build-time secrets from Secret Manager
+for SECRET in anthropic-api-key gcp-sa-json; do
+    gcloud secrets add-iam-policy-binding "$SECRET" \
+        --member="serviceAccount:${DEPLOYER}" \
+        --role=roles/secretmanager.secretAccessor
+done
+
+# Needed because `gcloud run deploy --service-account=...` requires the
+# deployer to be able to act as the runtime SAs.
+for RUNTIME in tb-analyzer tb-pipeline; do
+    gcloud iam service-accounts add-iam-policy-binding \
+        "${RUNTIME}@${PROJECT_ID}.iam.gserviceaccount.com" \
+        --member="serviceAccount:${DEPLOYER}" \
+        --role=roles/iam.serviceAccountUser
+done
+```
+
+### 6. Create the Workload Identity Pool + Provider
 
 ```bash
 gcloud iam workload-identity-pools create "github-pool" \
@@ -73,22 +123,22 @@ gcloud iam workload-identity-pools providers create-oidc "github-provider" \
     --workload-identity-pool="github-pool" \
     --display-name="GitHub provider" \
     --attribute-mapping="google.subject=assertion.sub,attribute.actor=assertion.actor,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner" \
-    --attribute-condition="assertion.repository_owner == 'YOUR_GITHUB_ORG'" \
+    --attribute-condition="assertion.repository_owner == 'Threadbeast'" \
     --issuer-uri="https://token.actions.githubusercontent.com"
 ```
 
-### 4. Allow the GitHub repo to impersonate the deployer SA
+### 7. Allow the GitHub repo to impersonate the deployer SA
 
 ```bash
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
 
 gcloud iam service-accounts add-iam-policy-binding \
-    "tb-gh-deployer@${PROJECT_ID}.iam.gserviceaccount.com" \
+    "ai-projects@${PROJECT_ID}.iam.gserviceaccount.com" \
     --role=roles/iam.workloadIdentityUser \
-    --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-pool/attribute.repository/YOUR_GITHUB_ORG/YOUR_REPO"
+    --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-pool/attribute.repository/Threadbeast/TB-ai-projects"
 ```
 
-### 5. Get the provider resource name
+### 8. Get the provider resource name
 
 ```bash
 gcloud iam workload-identity-pools providers describe "github-provider" \
@@ -97,17 +147,17 @@ gcloud iam workload-identity-pools providers describe "github-provider" \
 # → projects/123456789/locations/global/workloadIdentityPools/github-pool/providers/github-provider
 ```
 
-### 6. Set GitHub repository variables
+### 9. Set GitHub repository variables
 
 In GitHub: **Settings → Secrets and variables → Actions → Variables tab**.
-These are *variables*, not *secrets* — none of them are sensitive on their own.
+These are *variables*, not *secrets* — none are sensitive on their own.
 
 | Name | Value |
 |---|---|
-| `GCP_PROJECT_ID` | your project ID |
-| `GCP_REGION` | e.g. `us-central1` |
-| `GCP_WIF_PROVIDER` | full provider resource name from step 5 |
-| `GCP_DEPLOYER_SA` | `tb-gh-deployer@PROJECT_ID.iam.gserviceaccount.com` |
+| `GCP_PROJECT_ID` | `threadbeast-devops` |
+| `GCP_REGION` | `us-central1` |
+| `GCP_WIF_PROVIDER` | full provider resource name from step 8 |
+| `GCP_DEPLOYER_SA` | `ai-projects@threadbeast-devops.iam.gserviceaccount.com` |
 
 That's it — pushing to `main` (or clicking **Run workflow** in the Actions tab)
 will deploy.
@@ -116,13 +166,22 @@ will deploy.
 
 ## Deploy order for a fresh environment
 
-`push to main` only deploys the service whose files changed. When spinning up
-an entirely new GCP project, trigger the workflows manually in order:
+Path filters mean pushes only redeploy the service that changed. For an initial
+cold start, trigger the workflows manually in order:
 
 1. **Run workflow** on `deploy-analyzer.yml`
 2. **Run workflow** on `deploy-pipeline.yml`
-3. **Run workflow** on `deploy-proxy.yml` (reads the URLs from the two above)
+3. **Run workflow** on `deploy-proxy.yml` (reads URLs from the two above)
 
-After that, ongoing pushes deploy whichever service changed. The proxy only
-needs re-running if an upstream service is ever deleted and recreated under a
-new `*.run.app` URL.
+The proxy resolves upstreams lazily at request time via `resolver` in
+`nginx/proxy.conf.template`, so it does **not** need re-deploying every time an
+upstream is updated — only if an upstream is deleted and recreated under a new
+`*.run.app` URL.
+
+---
+
+## Cloud Build (alternative / legacy)
+
+The `cloudbuild/` directory still contains `analyzer.yaml` / `pipeline.yaml` /
+`proxy.yaml` for anyone who prefers `gcloud builds submit`. The GitHub
+workflows no longer use them — they build directly on the runner.

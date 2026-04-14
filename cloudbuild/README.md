@@ -54,7 +54,7 @@ gcloud secrets create gcp-sa-json --data-file=./secrets/gcp-sa.json
 Grant the Cloud Build service account access to both secrets:
 
 ```bash
-PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+PROJECT_NUMBER=$(gcloud projects describe "threadbeast-devops" --format='value(projectNumber)')
 CB_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
 
 for SECRET in anthropic-api-key gcp-sa-json; do
@@ -63,6 +63,7 @@ for SECRET in anthropic-api-key gcp-sa-json; do
         --role=roles/secretmanager.secretAccessor
 done
 ```
+gcloud secrets add-iam-policy-binding "gcp-sa-json" --member="serviceAccount:${CB_SA}" --role=roles/secretmanager.secretAccessor
 
 ### 4. Create runtime service accounts
 
@@ -73,6 +74,8 @@ gcloud iam service-accounts create tb-analyzer \
 gcloud secrets add-iam-policy-binding anthropic-api-key \
     --member="serviceAccount:tb-analyzer@${PROJECT_ID}.iam.gserviceaccount.com" \
     --role=roles/secretmanager.secretAccessor
+    
+gcloud secrets add-iam-policy-binding anthropic-api-key --member="serviceAccount:ai-projects@threadbeast-devops.iam.gserviceaccount.com" --role=roles/secretmanager.secretAccessor
 
 # Pipeline runtime SA — also gets the Anthropic secret for interactive reruns.
 # (BigQuery access is only needed at build time via gcp-sa-json.)
@@ -89,7 +92,7 @@ gcloud secrets add-iam-policy-binding anthropic-api-key \
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${CB_SA}" \
     --role=roles/run.admin
-
+gcloud projects add-iam-policy-binding "threadbeast-devops" --member="serviceAccount:${CB_SA}" --role=roles/iam.serviceAccountUser
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${CB_SA}" \
     --role=roles/iam.serviceAccountUser
