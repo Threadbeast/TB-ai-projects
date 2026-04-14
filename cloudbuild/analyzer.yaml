@@ -12,13 +12,13 @@ substitutions:
 steps:
   - id: build
     name: gcr.io/cloud-builders/docker
+    entrypoint: bash
     args:
-      - build
-      - -t
-      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest"
-      - -t
-      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${BUILD_ID}"
-      - projects/hate-it-rate-analyzer
+      - -c
+      - |
+        docker build \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest \
+          projects/hate-it-rate-analyzer
 
   - id: push
     name: gcr.io/cloud-builders/docker
