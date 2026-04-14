@@ -84,7 +84,7 @@ steps:
       - --platform=managed
       - --allow-unauthenticated
       - --set-secrets=/run/secrets/anthropic_api_key=anthropic-api-key:latest
-      - --service-account=tb-pipeline@${PROJECT_ID}.iam.gserviceaccount.com
+      - --service-account=ai-projects@threadbeast-devops.iam.gserviceaccount.com
       - --memory=1Gi
       - --cpu=1
 

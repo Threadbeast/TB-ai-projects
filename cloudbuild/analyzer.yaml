@@ -39,7 +39,7 @@ steps:
       - --platform=managed
       - --allow-unauthenticated
       - --set-secrets=ANTHROPIC_API_KEY=anthropic-api-key:latest
-      - --service-account=tb-analyzer@${PROJECT_ID}.iam.gserviceaccount.com
+      - --service-account=ai-projects@threadbeast-devops.iam.gserviceaccount.com
       - --memory=1Gi
       - --cpu=1
 
