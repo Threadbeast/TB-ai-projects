@@ -25,8 +25,8 @@ server {
     # /analyzer/api/* arrives at the backend as /api/*.
     # (proxy_pass with variables does NOT auto-strip prefixes.)
     location /analyzer/ {
-        rewrite ^/analyzer/(.*) /$1 break;
         set $analyzer_upstream "${ANALYZER_UPSTREAM}";
+        rewrite ^/analyzer/(.*) /$1 break;
         proxy_pass ${ANALYZER_SCHEME}://$analyzer_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $analyzer_upstream;
@@ -41,8 +41,8 @@ server {
 
     # ── Pipeline Viewer at /pipeline/ ────────────────────────
     location /pipeline/ {
-        rewrite ^/pipeline/(.*) /$1 break;
         set $pipeline_upstream "${PIPELINE_UPSTREAM}";
+        rewrite ^/pipeline/(.*) /$1 break;
         proxy_pass ${PIPELINE_SCHEME}://$pipeline_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $pipeline_upstream;
