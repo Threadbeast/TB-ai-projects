@@ -2,4 +2,11 @@
 # The Docker build runs `python3 run_customer.py <email>` for each line.
 #
 # Example:
-porterg2003@gmail.com
+juliog55@yahoo.com
+uday@threadbeast.com
+Rob@threadbeast.com
+brendan@threadbeast.com
+mchang@threadbeast.com
+chaz@threadbeast.com
+andis@threadbeast.com
+justin@threadbeast.com
