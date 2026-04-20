@@ -20,7 +20,9 @@ ENV PORT=80 \
     NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx/conf.d
 
 COPY proxy.conf.template /etc/nginx/templates/default.conf.template
-COPY index.html /usr/share/nginx/html/index.html
+COPY --chmod=644 index.html /usr/share/nginx/html/index.html
+COPY --chmod=644 background.jpg /usr/share/nginx/html/background.jpg
+COPY --chmod=644 logo.svg /usr/share/nginx/html/logo.svg
 
 EXPOSE 8080
 

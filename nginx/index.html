@@ -16,6 +16,30 @@
         margin: 0;
         padding: 0;
         -webkit-font-smoothing: antialiased;
+        position: relative;
+        min-height: 100vh;
+      }
+
+      body::before {
+        content: '';
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: url('/background.jpg') center center / cover no-repeat;
+        z-index: -2;
+      }
+
+      body::after {
+        content: '';
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(245, 245, 240, 0.85);
+        z-index: -1;
       }
 
       header {
@@ -25,17 +49,11 @@
         text-align: center;
       }
 
-      h1 {
-        font-size: 2.8rem;
-        font-weight: 900;
-        color: #fff;
-        text-transform: uppercase;
-        letter-spacing: -0.02em;
-        line-height: 1.05;
-        margin-bottom: 0.5rem;
-        max-width: 640px;
-        margin-left: auto;
-        margin-right: auto;
+      .logo {
+        display: block;
+        max-width: 320px;
+        height: auto;
+        margin: 0 auto 0.5rem;
       }
 
       p.lead {
@@ -60,28 +78,28 @@
       }
 
       li {
-        border: 1px solid #e0e0dc;
+        border: 0px solid #e0e0dc;
         border-radius: 8px;
         padding: 1.25rem 1.5rem;
         margin-bottom: 1rem;
         background: #fff;
-        transition: border-color 0.2s;
+        opacity: 0.8;
+        transition: border-color 0.2s, opacity 0.2s;
       }
 
       li:hover {
         border-color: #1a1a2e;
+        opacity: 1;
       }
 
       li a {
         color: #1a1a2e;
         text-decoration: none;
-        font-weight: 700;
+        font-weight: 400;
         font-size: 1.05rem;
-        text-transform: uppercase;
         letter-spacing: 0.02em;
+        display: block;
       }
-
-      li a:hover { text-decoration: underline; }
 
       li p {
         margin: 0.35rem 0 0;
@@ -92,18 +110,22 @@
   </head>
   <body>
     <header>
-      <h1>Threadbeast AI</h1>
+      <img src="/logo.svg" alt="Threadbeast" class="logo" />
       <p class="lead">Collection of internal AI tools</p>
     </header>
     <div class="content">
     <ul>
       <li>
-        <a href="https://tb-analyzer-ogz6l7tv4q-uc.a.run.app/">Hate It Rate Analyzer</a>
-        <p>Dashboard, report, and chat for hate-it-rate data.</p>
+        <a href="https://tb-analyzer-ogz6l7tv4q-uc.a.run.app/">
+          <b>Hate It Rate Analyzer</b>
+          <p>Dashboard, report, and chat for hate-it-rate data.</p>
+        </a>
       </li>
       <li>
-        <a href="https://tb-pipeline-ogz6l7tv4q-uc.a.run.app/">Pipeline Viewer</a>
-        <p>Style profile and outfit recommendation pipeline viewer.</p>
+        <a href="https://tb-pipeline-ogz6l7tv4q-uc.a.run.app/">
+          <b>AI Style Profile</b>
+          <p>AI Style profile and outfit recommendation pipeline viewer.</p>
+        </a>
       </li>
     </ul>
     </div>
